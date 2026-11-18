@@ -2,7 +2,7 @@
 
 一个仿照 **Mesen2** 界面风格的 **Sega Mega Drive / Genesis** 模拟器前端。
 
-**当前版本：v1.0.0**  ·  Windows (MinGW-w64)
+**当前版本：v1.0.1**  ·  Windows (MinGW-w64)
 
 - **核心**：[Genesis Plus GX (libretro)](https://github.com/libretro/Genesis-Plus-GX) —— RetroArch 的官方 MD 核心，精度高，支持 MD / Sega CD / Master System / Game Gear。
 - **前端界面**：SDL2 + OpenGL 3 + Dear ImGui，深色主题，行为与外观尽量贴近 Mesen2。
@@ -32,6 +32,7 @@
 - [x] Video filters (LCD Grid / CRT / Scanlines) using official RetroArch GLSL shaders
 - [x] Auto-save & auto-load game state on close/open (F1-F10 quick load / Shift+F1-F10 quick save)
 - [x] Home page with play-history snapshots/thumbnails
+- [x] Delete a recent-game snapshot (removes the history entry, its thumbnail and saved states)
 ---
 
 ## 目录结构
@@ -188,4 +189,5 @@ MesenMD.exe "C:\path\to\game.md"
 - Controllers are hot-plugged: plugging/unplugging is handled live, and each pad can be assigned to Player 1 or Player 2 in the Input window.
 - Keyboard and gamepad input combine, so multiple pads or a pad plus the keyboard can drive the same player at the same time.
 - Optional custom mappings can be added by placing a gamecontrollerdb.txt next to MesenMD.exe.
+- Default 6-button gamepad mapping (standard SDL/Xbox layout): `X` = MD A, `A` = MD B, `B` = MD C, `LB` = MD X, `Y` = MD Y, `RB` = MD Z, `Start` = Start, `Back/Guide` = Mode.
 

@@ -22,7 +22,7 @@
 #include "emulator.h"
 #include "video_filters.h"
 
-#define MESENMD_VERSION "1.0.0"
+#define MESENMD_VERSION "1.0.1"
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -120,11 +120,11 @@ static int actionToRetroId(int action)
         case AID_DOWN:  return RETRO_DEVICE_ID_JOYPAD_DOWN;
         case AID_LEFT:  return RETRO_DEVICE_ID_JOYPAD_LEFT;
         case AID_RIGHT: return RETRO_DEVICE_ID_JOYPAD_RIGHT;
-        case AID_A:     return RETRO_DEVICE_ID_JOYPAD_A;
+        case AID_A:     return RETRO_DEVICE_ID_JOYPAD_Y;
         case AID_B:     return RETRO_DEVICE_ID_JOYPAD_B;
-        case AID_C:     return RETRO_DEVICE_ID_JOYPAD_X;
+        case AID_C:     return RETRO_DEVICE_ID_JOYPAD_A;
         case AID_X:     return RETRO_DEVICE_ID_JOYPAD_L;
-        case AID_Y:     return RETRO_DEVICE_ID_JOYPAD_Y;
+        case AID_Y:     return RETRO_DEVICE_ID_JOYPAD_X;
         case AID_Z:     return RETRO_DEVICE_ID_JOYPAD_R;
         case AID_START: return RETRO_DEVICE_ID_JOYPAD_START;
         case AID_MODE:  return RETRO_DEVICE_ID_JOYPAD_SELECT;
@@ -311,9 +311,20 @@ static void addRecent(const std::string& path)
 // ---------------------------------------------------------------------------
 // Save-state helpers
 // ---------------------------------------------------------------------------
+static std::wstring utf8ToWide(const std::string& s)
+{
+    int wlen = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0);
+    if (wlen <= 1) return std::wstring();
+    std::wstring w(static_cast<size_t>(wlen - 1), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, &w[0], wlen - 1);
+    return w;
+}
+
 static bool fileExists(const std::string& path)
 {
-    DWORD attrs = GetFileAttributesA(path.c_str());
+    std::wstring w = utf8ToWide(path);
+    if (w.empty()) return false;
+    DWORD attrs = GetFileAttributesW(w.c_str());
     return attrs != INVALID_FILE_ATTRIBUTES;
 }
 
@@ -917,6 +928,37 @@ static GLuint getThumbTexture(const std::string& path)
     return tex;
 }
 
+static void deleteRecentSnapshot(const std::string& path)
+{
+    auto it = std::find(g_cfg.recentGames.begin(), g_cfg.recentGames.end(), path);
+    if (it != g_cfg.recentGames.end())
+        g_cfg.recentGames.erase(it);
+
+    std::string tpath = thumbPathForPath(path);
+    std::wstring wthumb = utf8ToWide(tpath);
+    if (!wthumb.empty())
+        DeleteFileW(wthumb.c_str());
+    auto tc = g_thumbCache.find(tpath);
+    if (tc != g_thumbCache.end())
+    {
+        if (tc->second)
+            glDeleteTextures(1, &tc->second);
+        g_thumbCache.erase(tc);
+    }
+
+    std::wstring wstate = utf8ToWide(path + ".state");
+    if (!wstate.empty())
+        DeleteFileW(wstate.c_str());
+    for (int slot = 1; slot <= 10; ++slot)
+    {
+        std::wstring wslot = utf8ToWide(path + "." + std::to_string(slot) + ".state");
+        if (!wslot.empty())
+            DeleteFileW(wslot.c_str());
+    }
+
+    saveConfig();
+}
+
 static void drawHomePage()
 {
     ImGui::Text(tr("Recent Games", "最近游戏"));
@@ -934,8 +976,13 @@ static void drawHomePage()
     float avail = ImGui::GetContentRegionAvail().x;
     int cols = (int)(avail / (cardW + gap));
     if (cols < 1) cols = 1;
+    float contentW = (float)cols * cardW + (float)(cols - 1) * gap;
+    float indent = avail - contentW;
+    if (indent > 0.0f) indent *= 0.5f;
+    if (indent > 0.0f) ImGui::Indent(indent);
 
     std::string clicked;
+    std::string deleted;
     int col = 0;
     for (size_t i = 0; i < g_cfg.recentGames.size(); ++i)
     {
@@ -965,13 +1012,26 @@ static void drawHomePage()
                 clicked = path;
             ImGui::PopStyleColor(2);
         }
+
+        ImGui::SetCursorPos(ImVec2(cardW - 28, 2));
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.85f, 0.2f, 0.2f, 0.7f));
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
+        if (ImGui::Button(("x##del" + std::to_string(i)).c_str(), ImVec2(24, 22)))
+            deleted = path;
+        ImGui::PopStyleColor(3);
+
+        ImGui::SetCursorPos(ImVec2(4, imgH + 4));
         ImGui::TextWrapped("%s", name.c_str());
         ImGui::EndChild();
 
         if (col >= cols) col = 0;
     }
+    if (indent > 0.0f) ImGui::Unindent(indent);
     ImGui::EndChild();
 
+    if (!deleted.empty())
+        deleteRecentSnapshot(deleted);
     if (!clicked.empty())
         loadRom(clicked);
 }

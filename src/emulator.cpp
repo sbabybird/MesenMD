@@ -5,6 +5,16 @@
 #include <cstring>
 #include <fstream>
 
+
+static std::wstring utf8ToWide(const std::string& s)
+{
+    int wlen = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0);
+    if (wlen <= 1) return std::wstring();
+    std::wstring w(static_cast<size_t>(wlen - 1), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, &w[0], wlen - 1);
+    return w;
+}
+
 Emulator* g_emulator = nullptr;
 
 struct Emulator::CoreApi
@@ -190,11 +200,16 @@ bool Emulator::saveState(const std::string& path)
     if (!api_->serialize(buf.data(), buf.size()))
         return false;
 
-    std::ofstream f(path, std::ios::binary | std::ios::trunc);
+    std::wstring wpath = utf8ToWide(path);
+    if (wpath.empty())
+        return false;
+    FILE* f = _wfopen(wpath.c_str(), L"wb");
     if (!f)
         return false;
-    f.write(reinterpret_cast<const char*>(buf.data()), buf.size());
-    return f.good();
+    size_t n = fwrite(buf.data(), 1, buf.size(), f);
+    bool ok = (n == buf.size()) && (fflush(f) == 0);
+    fclose(f);
+    return ok;
 }
 
 bool Emulator::loadState(const std::string& path)
@@ -202,17 +217,28 @@ bool Emulator::loadState(const std::string& path)
     if (!coreLoaded_ || !gameLoaded_ || !api_->unserialize)
         return false;
 
-    std::ifstream f(path, std::ios::binary);
+    std::wstring wpath = utf8ToWide(path);
+    if (wpath.empty())
+        return false;
+    FILE* f = _wfopen(wpath.c_str(), L"rb");
     if (!f)
         return false;
-    f.seekg(0, std::ios::end);
-    std::streamsize size = f.tellg();
-    f.seekg(0, std::ios::beg);
+    if (fseek(f, 0, SEEK_END) != 0)
+    {
+        fclose(f);
+        return false;
+    }
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
     if (size <= 0)
+    {
+        fclose(f);
         return false;
+    }
     std::vector<uint8_t> buf(static_cast<size_t>(size));
-    f.read(reinterpret_cast<char*>(buf.data()), size);
-    if (!f)
+    size_t rd = fread(buf.data(), 1, buf.size(), f);
+    fclose(f);
+    if (rd != buf.size())
         return false;
     return api_->unserialize(buf.data(), buf.size());
 }
