@@ -22,7 +22,7 @@
 #include "emulator.h"
 #include "video_filters.h"
 
-#define MESENMD_VERSION "1.0.2"
+#define MESENMD_VERSION "1.0.3"
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -1114,15 +1114,16 @@ static void drawHomePage()
             ImGui::SetCursorPosX((cardW - imgSize.x) * 0.5f);
             ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.16f, 0.16f, 0.20f, 1.0f));
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.22f, 0.22f, 0.28f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
             if (ImGui::Button(tr("No snapshot", "无快照"), imgSize))
                 clicked = path;
-            ImGui::PopStyleColor(2);
+            ImGui::PopStyleColor(3);
         }
 
         ImGui::SetCursorPos(ImVec2(cardW - 28, 2));
         ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.85f, 0.2f, 0.2f, 0.7f));
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_Text, (g_lastAppliedDark == 1) ? ImVec4(1.0f, 1.0f, 1.0f, 1.0f) : ImVec4(0.10f, 0.10f, 0.12f, 1.0f));
         if (ImGui::Button(("x##del" + std::to_string(i)).c_str(), ImVec2(24, 22)))
             deleted = path;
         ImGui::PopStyleColor(3);
