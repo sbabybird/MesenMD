@@ -2,7 +2,7 @@
 
 一个仿照 **Mesen2** 界面风格的 **Sega Mega Drive / Genesis** 模拟器前端。
 
-**当前版本：v1.0.3**  ·  Windows (MinGW-w64)
+**当前版本：v1.0.4**  ·  Windows (MinGW-w64)
 
 - **核心**：[Genesis Plus GX (libretro)](https://github.com/libretro/Genesis-Plus-GX) —— RetroArch 的官方 MD 核心，精度高，支持 MD / Sega CD / Master System / Game Gear。
 - **前端界面**：SDL2 + OpenGL 3 + Dear ImGui，深色主题，行为与外观尽量贴近 Mesen2。

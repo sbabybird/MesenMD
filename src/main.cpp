@@ -22,7 +22,7 @@
 #include "emulator.h"
 #include "video_filters.h"
 
-#define MESENMD_VERSION "1.0.3"
+#define MESENMD_VERSION "1.0.4"
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -774,6 +774,16 @@ static void drawMainMenu()
         {
             if (ImGui::MenuItem(tr("Video...", "视频..."))) g_showVideo = true;
             if (ImGui::MenuItem(tr("Input...", "输入..."))) g_showInput = true;
+            if (ImGui::BeginMenu(tr("Theme", "主题")))
+            {
+                int prev = g_cfg.theme;
+                if (ImGui::RadioButton(tr("System (auto)", "跟随系统"), g_cfg.theme == 0)) g_cfg.theme = 0;
+                if (ImGui::RadioButton(tr("Dark", "暗色"), g_cfg.theme == 1)) g_cfg.theme = 1;
+                if (ImGui::RadioButton(tr("Light", "亮色"), g_cfg.theme == 2)) g_cfg.theme = 2;
+                if (g_cfg.theme != prev) { applyTheme(true); saveConfig(); }
+                ImGui::EndMenu();
+            }
+
             ImGui::EndMenu();
         }
 
@@ -793,6 +803,10 @@ static void drawStatusBar()
     ImGui::SetNextWindowSize(ImVec2(vp->WorkSize.x, 24));
     ImGui::Begin("##status", nullptr,
                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus);
+    const float barH = 24;
+    ImVec2 cur = ImGui::GetCursorScreenPos();
+    ImGui::SetCursorScreenPos(ImVec2(cur.x, vp->WorkPos.y + vp->WorkSize.y - barH + (barH - ImGui::GetTextLineHeight()) * 0.5f));
+
     if (g_emu.gameLoaded())
     {
         char buf[256];
@@ -1091,27 +1105,36 @@ static void drawHomePage()
         size_t pos = name.find_last_of("\\/");
         if (pos != std::string::npos) name = name.substr(pos + 1);
 
-        ImGui::BeginChild(("##card" + std::to_string(i)).c_str(), ImVec2(cardW, imgH + 36), true,
+        const float headerH = 22;
+        ImGui::BeginChild(("##card" + std::to_string(i)).c_str(), ImVec2(cardW, headerH + imgH + 40), true,
                           ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
 
-        // ImageButton() adds FramePadding*2 around the image, so shift the cursor so the
-        // image content itself is centered within the card instead of being pushed right.
         float imgW = cardW - 2.0f * padX - 2.0f * fpX;
         if (imgW <= 0.0f) imgW = cardW - 2.0f * fpX;
         float imgX = (cardW - imgW) * 0.5f - fpX;
         GLuint tex = getThumbTexture(thumbPathForPath(path));
         ImVec2 imgSize(imgW, imgH);
+
+        // Delete button lives in a header strip above the thumbnail so it never
+        // overlaps the image (which would otherwise swallow the click and launch the ROM).
+        ImGui::SetCursorPos(ImVec2(cardW - 30, 2));
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.85f, 0.2f, 0.2f, 0.7f));
+        ImGui::PushStyleColor(ImGuiCol_Text, (g_lastAppliedDark == 1) ? ImVec4(1.0f, 1.0f, 1.0f, 1.0f) : ImVec4(0.10f, 0.10f, 0.12f, 1.0f));
+        if (ImGui::Button(("x##del" + std::to_string(i)).c_str(), ImVec2(26, 18)))
+            deleted = path;
+        ImGui::PopStyleColor(3);
+
+        ImGui::SetCursorPos(ImVec2(imgX, headerH));
         if (tex)
         {
-            ImGui::SetCursorPosX(imgX);
             if (ImGui::ImageButton(("##thumb" + std::to_string(i)).c_str(),
                                    (ImTextureID)(intptr_t)tex, imgSize))
                 clicked = path;
         }
         else
         {
-            // Button() uses the given size directly (no FramePadding), so center it on its own.
-            ImGui::SetCursorPosX((cardW - imgSize.x) * 0.5f);
+            ImGui::SetCursorPos(ImVec2(imgX + fpX, headerH));
             ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.16f, 0.16f, 0.20f, 1.0f));
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.22f, 0.22f, 0.28f, 1.0f));
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
@@ -1120,15 +1143,7 @@ static void drawHomePage()
             ImGui::PopStyleColor(3);
         }
 
-        ImGui::SetCursorPos(ImVec2(cardW - 28, 2));
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.85f, 0.2f, 0.2f, 0.7f));
-        ImGui::PushStyleColor(ImGuiCol_Text, (g_lastAppliedDark == 1) ? ImVec4(1.0f, 1.0f, 1.0f, 1.0f) : ImVec4(0.10f, 0.10f, 0.12f, 1.0f));
-        if (ImGui::Button(("x##del" + std::to_string(i)).c_str(), ImVec2(24, 22)))
-            deleted = path;
-        ImGui::PopStyleColor(3);
-
-        ImGui::SetCursorPos(ImVec2(4, imgH + 12));
+        ImGui::SetCursorPos(ImVec2(4, headerH + imgH + 10));
         ImGui::TextWrapped("%s", name.c_str());
         ImGui::EndChild();
 
