@@ -1,0 +1,30 @@
+# Build output
+MesenMD.exe
+SDL2.dll
+genesis_plus_gx_libretro.dll
+*.o
+*.obj
+
+# Runtime config
+mesenmd.cfg
+imgui.ini
+
+# Scratch / temp / test data
+_scratch/
+*.log
+thumbnails/
+dist/
+
+# Downloaded dependencies (re-obtain from upstream)
+third_party/*.zip
+
+# Third-party: keep only what the frontend build needs.
+# The 32-bit SDL2 package, SDL2 test assets, and the cross-platform
+# build outputs of Genesis Plus GX are not used by the frontend build.
+third_party/SDL2-2.32.10/i686-w64-mingw32/
+third_party/SDL2-2.32.10/test/
+third_party/Genesis-Plus-GX-master/builds/
+third_party/Genesis-Plus-GX-master/gx/
+third_party/Genesis-Plus-GX-master/gcw0/
+third_party/Genesis-Plus-GX-master/ps3/
+third_party/Genesis-Plus-GX-master/ports/

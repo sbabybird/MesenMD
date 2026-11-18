@@ -1,0 +1,11 @@
+# Force LF for all text files (keeps embedded GLSL shader strings and
+# UTF-8 C++ sources stable across clones on Windows).
+* text=auto eol=lf
+
+# Explicitly mark binary assets.
+*.png binary
+*.jpg binary
+*.doc binary
+*.pdf binary
+*.exe binary
+*.dll binary
