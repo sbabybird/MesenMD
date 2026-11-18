@@ -2,7 +2,7 @@
 
 一个仿照 **Mesen2** 界面风格的 **Sega Mega Drive / Genesis** 模拟器前端。
 
-**当前版本：v1.0.4**  ·  Windows (MinGW-w64)
+**当前版本：v1.0.5**  ·  Windows (MinGW-w64)
 
 - **核心**：[Genesis Plus GX (libretro)](https://github.com/libretro/Genesis-Plus-GX) —— RetroArch 的官方 MD 核心，精度高，支持 MD / Sega CD / Master System / Game Gear。
 - **前端界面**：SDL2 + OpenGL 3 + Dear ImGui，深色主题，行为与外观尽量贴近 Mesen2。
@@ -22,6 +22,8 @@
 - [x] 音频输出（SDL2 队列驱动，接近实时节奏）
 - [x] 键盘按键重映射（`Config -> Input...`）
 - [x] 手柄支持（SDL_GameController，玩家 1 / 玩家 2）
+- [x] 首页快照支持手柄导航（D-pad 选择、A 开始、X 删除）
+- [x] 手柄快捷键（默认 Select+按钮，可在 `Config -> Input...` 重映射）
 - [x] 暂停 / 复位 / 关闭游戏
 - [x] 支持中文等非 ASCII 路径（UTF-8 处理）
 - [x] 拖放 ROM 文件到窗口即可加载
@@ -35,6 +37,8 @@
 - [x] Delete a recent-game snapshot (removes the history entry, its thumbnail and saved states)
 - [x] UI themes: Light / Dark / follow system (auto-adapts to the Windows personalization setting, switchable in `Config -> Video...`)
 - [x] Pause now mutes audio fully (pauses the SDL audio device and clears queued samples)
+- [x] Gamepad navigation on the home page (D-pad select, A play, X delete)
+- [x] Gamepad hotkeys (default Select+button; rebindable in `Config -> Input...`)
 ---
 
 ## 目录结构
@@ -161,6 +165,20 @@ MesenMD.exe "C:\path\to\game.md"
 界面语言可在 `Config -> Video...` 中切换（English / 中文）。
 
 按键可在 `Config -> Input...` 中重映射，支持每个动作绑定多个按键；键盘与所有已连接手柄同时驱动玩家。手柄遵循标准 SDL 映射（A/B/X/Y、肩键、Start/Back、左摇杆）。
+
+手柄快捷键（默认，`Select` 即手柄的 Back / Select 键）：
+
+| 动作 | 默认组合 |
+|------|------|
+| 保存状态 | Select + A |
+| 加载状态 | Select + B |
+| 重置游戏 | Select + X |
+| 退出游戏 | Select + Y |
+| 退出程序 | Select + Start |
+| 暂停 | Select + LB |
+| 全屏 | Select + RB |
+
+可在 `Config -> Input...` 的「手柄快捷键」区重映射：点击「重新绑定」后先按住修饰键再按目标按钮，按 `Esc` 取消。
 
 ---
 
