@@ -22,7 +22,7 @@
 #include "emulator.h"
 #include "video_filters.h"
 
-#define MESENMD_VERSION "1.0.1"
+#define MESENMD_VERSION "1.0.2"
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -74,6 +74,7 @@ struct Config
     int  keyboardPlayer = 0;      // joypad slot the keyboard drives (0=P1, 1=P2)
     bool fullscreen = false;      // start the window fullscreen
     int  language = 0;            // UI language: 0=English, 1=Chinese
+    int  theme = 0;               // UI theme: 0=System(auto), 1=Dark, 2=Light
     SDL_Scancode keys[AID_COUNT][MAX_KEYS_PER_ACTION];
     int  keyCount[AID_COUNT];
     std::vector<std::string> recentGames;
@@ -152,6 +153,9 @@ static bool g_showAbout   = false;
 static int  g_rebindAction = -1;
 static int  g_rebindSlot   = -1;
 static Uint64 g_lastThumbMs = 0;
+static Uint64 g_lastThemeCheckMs = 0;
+static int   g_lastAppliedDark = -1;
+static ImVec4 g_clearColor(0.02f, 0.02f, 0.03f, 1.0f);
 static volatile bool g_quitRequested = false;
 
 static BOOL WINAPI consoleCtrlHandler(DWORD type)
@@ -250,6 +254,7 @@ static void saveConfig()
     f << "keyboardPlayer=" << g_cfg.keyboardPlayer << "\n";
     f << "fullscreen=" << (g_cfg.fullscreen ? 1 : 0) << "\n";
     f << "language=" << g_cfg.language << "\n";
+    f << "theme=" << g_cfg.theme << "\n";
     for (size_t i = 0; i < g_cfg.recentGames.size(); ++i)
         f << "recent=" << g_cfg.recentGames[i] << "\n";
 }
@@ -275,6 +280,7 @@ static void loadConfig()
         else if (key == "keyboardPlayer") g_cfg.keyboardPlayer = std::atoi(val.c_str());
         else if (key == "fullscreen") g_cfg.fullscreen = std::atoi(val.c_str()) != 0;
         else if (key == "language") g_cfg.language = std::atoi(val.c_str());
+        else if (key == "theme") g_cfg.theme = std::atoi(val.c_str());
         else if (key.rfind("key", 0) == 0)
         {
             int idx = -1, slot = -1;
@@ -294,6 +300,64 @@ static void loadConfig()
         }
         else if (key == "recent")
             g_cfg.recentGames.push_back(val);
+    }
+}
+
+static bool systemUsesDarkTheme()
+{
+    HKEY hkey = nullptr;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER,
+                      L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+                      0, KEY_READ, &hkey) == ERROR_SUCCESS)
+    {
+        DWORD value = 1, size = sizeof(value);
+        if (RegQueryValueExW(hkey, L"AppsUseLightTheme", nullptr, nullptr,
+                             (LPBYTE)&value, &size) == ERROR_SUCCESS)
+        {
+            RegCloseKey(hkey);
+            return value == 0;
+        }
+        RegCloseKey(hkey);
+    }
+    return true;
+}
+
+static void applyTheme(bool force)
+{
+    bool dark = (g_cfg.theme == 1) ? true
+              : (g_cfg.theme == 2) ? false
+              : systemUsesDarkTheme();
+    int d = dark ? 1 : 0;
+    if (!force && d == g_lastAppliedDark)
+        return;
+    g_lastAppliedDark = d;
+
+    if (dark)
+        ImGui::StyleColorsDark();
+    else
+        ImGui::StyleColorsLight();
+
+    if (dark)
+        g_clearColor = ImVec4(0.02f, 0.02f, 0.03f, 1.0f);
+    else
+        g_clearColor = ImVec4(0.86f, 0.87f, 0.89f, 1.0f);
+
+    ImGuiStyle& style = ImGui::GetStyle();
+    if (dark)
+    {
+        style.Colors[ImGuiCol_WindowBg]   = ImVec4(0.08f, 0.08f, 0.10f, 1.0f);
+        style.Colors[ImGuiCol_MenuBarBg]  = ImVec4(0.09f, 0.09f, 0.11f, 1.0f);
+        style.Colors[ImGuiCol_FrameBg]    = ImVec4(0.13f, 0.13f, 0.16f, 1.0f);
+        style.Colors[ImGuiCol_TitleBg]    = ImVec4(0.09f, 0.09f, 0.11f, 1.0f);
+        style.Colors[ImGuiCol_TitleBgActive] = ImVec4(0.12f, 0.12f, 0.16f, 1.0f);
+    }
+    else
+    {
+        style.Colors[ImGuiCol_WindowBg]   = ImVec4(0.96f, 0.96f, 0.97f, 1.0f);
+        style.Colors[ImGuiCol_MenuBarBg]  = ImVec4(0.90f, 0.91f, 0.93f, 1.0f);
+        style.Colors[ImGuiCol_FrameBg]    = ImVec4(0.89f, 0.90f, 0.92f, 1.0f);
+        style.Colors[ImGuiCol_TitleBg]    = ImVec4(0.90f, 0.91f, 0.93f, 1.0f);
+        style.Colors[ImGuiCol_TitleBgActive] = ImVec4(0.85f, 0.86f, 0.90f, 1.0f);
     }
 }
 
@@ -391,6 +455,26 @@ static void stopAudio()
     {
         SDL_CloseAudioDevice(g_audioDev);
         g_audioDev = 0;
+    }
+}
+
+static void togglePause()
+{
+    if (!g_emu.gameLoaded())
+        return;
+    bool nowPaused = !g_emu.paused();
+    g_emu.setPaused(nowPaused);
+    if (g_audioDev)
+    {
+        if (nowPaused)
+        {
+            SDL_PauseAudioDevice(g_audioDev, 1);
+            SDL_ClearQueuedAudio(g_audioDev);
+        }
+        else
+        {
+            SDL_PauseAudioDevice(g_audioDev, 0);
+        }
     }
 }
 
@@ -655,7 +739,7 @@ static void drawMainMenu()
             if (g_emu.gameLoaded())
             {
                 if (ImGui::MenuItem(g_emu.paused() ? tr("Resume", "继续") : tr("Pause", "暂停"), "Space"))
-                    g_emu.setPaused(!g_emu.paused());
+                    togglePause();
                 if (ImGui::MenuItem(tr("Reset", "重置"), "F12"))
                     g_emu.reset();
                 ImGui::Separator();
@@ -737,6 +821,13 @@ static void drawVideoSettings()
         ImGui::Checkbox(tr("Show FPS in status bar", "在状态栏显示帧率"), &g_cfg.showFps);
         ImGui::Checkbox(tr("Enable audio", "启用音频"), &g_cfg.audioEnabled);
         ImGui::Combo(tr("Language", "语言"), &g_cfg.language, "English\0中文\0");
+        int prevTheme = g_cfg.theme;
+        ImGui::Combo(tr("Theme", "主题"), &g_cfg.theme, "System\0Dark\0Light\0");
+        if (g_cfg.theme != prevTheme)
+        {
+            applyTheme(true);
+            saveConfig();
+        }
         ImGui::TextDisabled(tr("Changes apply immediately.", "更改立即生效。"));
         ImGui::End();
     }
@@ -973,13 +1064,16 @@ static void drawHomePage()
     }
 
     const float cardW = 184, gap = 14, imgH = 120;
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const float fpX = style.FramePadding.x;
+    const float padX = style.WindowPadding.x;
+
     float avail = ImGui::GetContentRegionAvail().x;
     int cols = (int)(avail / (cardW + gap));
     if (cols < 1) cols = 1;
     float contentW = (float)cols * cardW + (float)(cols - 1) * gap;
-    float indent = avail - contentW;
-    if (indent > 0.0f) indent *= 0.5f;
-    if (indent > 0.0f) ImGui::Indent(indent);
+    float startX = (avail - contentW) * 0.5f;
+    if (startX < 0.0f) startX = 0.0f;
 
     std::string clicked;
     std::string deleted;
@@ -987,7 +1081,10 @@ static void drawHomePage()
     for (size_t i = 0; i < g_cfg.recentGames.size(); ++i)
     {
         const std::string& path = g_cfg.recentGames[i];
-        if (col > 0) ImGui::SameLine(0, gap);
+        if (col == 0)
+            ImGui::SetCursorPosX(startX);
+        else
+            ImGui::SameLine(0, gap);
         col++;
 
         std::string name = path;
@@ -996,16 +1093,25 @@ static void drawHomePage()
 
         ImGui::BeginChild(("##card" + std::to_string(i)).c_str(), ImVec2(cardW, imgH + 36), true,
                           ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+
+        // ImageButton() adds FramePadding*2 around the image, so shift the cursor so the
+        // image content itself is centered within the card instead of being pushed right.
+        float imgW = cardW - 2.0f * padX - 2.0f * fpX;
+        if (imgW <= 0.0f) imgW = cardW - 2.0f * fpX;
+        float imgX = (cardW - imgW) * 0.5f - fpX;
         GLuint tex = getThumbTexture(thumbPathForPath(path));
-        ImVec2 imgSize(cardW - 12, imgH);
+        ImVec2 imgSize(imgW, imgH);
         if (tex)
         {
+            ImGui::SetCursorPosX(imgX);
             if (ImGui::ImageButton(("##thumb" + std::to_string(i)).c_str(),
                                    (ImTextureID)(intptr_t)tex, imgSize))
                 clicked = path;
         }
         else
         {
+            // Button() uses the given size directly (no FramePadding), so center it on its own.
+            ImGui::SetCursorPosX((cardW - imgSize.x) * 0.5f);
             ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.16f, 0.16f, 0.20f, 1.0f));
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.22f, 0.22f, 0.28f, 1.0f));
             if (ImGui::Button(tr("No snapshot", "无快照"), imgSize))
@@ -1021,13 +1127,12 @@ static void drawHomePage()
             deleted = path;
         ImGui::PopStyleColor(3);
 
-        ImGui::SetCursorPos(ImVec2(4, imgH + 4));
+        ImGui::SetCursorPos(ImVec2(4, imgH + 12));
         ImGui::TextWrapped("%s", name.c_str());
         ImGui::EndChild();
 
         if (col >= cols) col = 0;
     }
-    if (indent > 0.0f) ImGui::Unindent(indent);
     ImGui::EndChild();
 
     if (!deleted.empty())
@@ -1155,10 +1260,7 @@ int main(int argc, char** argv)
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
-    ImGui::StyleColorsDark();
-    ImGuiStyle& style = ImGui::GetStyle();
-    style.Colors[ImGuiCol_WindowBg]   = ImVec4(0.08f, 0.08f, 0.10f, 1.0f);
-    style.Colors[ImGuiCol_MenuBarBg]  = ImVec4(0.09f, 0.09f, 0.11f, 1.0f);
+    applyTheme(true);
     ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
 
     {
@@ -1329,7 +1431,7 @@ int main(int argc, char** argv)
                     if (sc == SDL_SCANCODE_F12 && g_emu.gameLoaded())
                         g_emu.reset();
                     if (sc == SDL_SCANCODE_SPACE && g_emu.gameLoaded())
-                        g_emu.setPaused(!g_emu.paused());
+                        togglePause();
                     if (sc == SDL_SCANCODE_O && (mod & KMOD_CTRL))
                     {
                         std::string path = openRomDialog(g_window);
@@ -1345,7 +1447,7 @@ int main(int argc, char** argv)
         if (g_emu.gameLoaded())
             g_emu.runFrame();
 
-        if (g_emu.gameLoaded() && g_audioDev)
+        if (g_emu.gameLoaded() && g_audioDev && !g_emu.paused())
         {
             const std::vector<int16_t>& aq = g_emu.audioQueue();
             if (!aq.empty())
@@ -1367,6 +1469,14 @@ int main(int argc, char** argv)
                 saveThumbnail();
                 g_lastThumbMs = now;
             }
+        }
+
+        Uint64 now2 = SDL_GetTicks64();
+        if (now2 - g_lastThemeCheckMs > 1000)
+        {
+            g_lastThemeCheckMs = now2;
+            if (g_cfg.theme == 0)
+                applyTheme(false);
         }
         drawMainMenu();
         drawViewport();
@@ -1391,13 +1501,13 @@ int main(int argc, char** argv)
         int dw, dh;
         SDL_GetWindowSize(g_window, &dw, &dh);
         glViewport(0, 0, dw, dh);
-        glClearColor(0.02f, 0.02f, 0.03f, 1.0f);
+        glClearColor(g_clearColor.x, g_clearColor.y, g_clearColor.z, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
         SDL_GL_SwapWindow(g_window);
 
         // Pace emulation to ~real-time using audio queue occupancy.
-        if (g_emu.gameLoaded() && g_audioDev)
+        if (g_emu.gameLoaded() && g_audioDev && !g_emu.paused())
         {
             double rate = g_emu.sampleRate();
             int maxBytes = (int)(rate * 0.20 * 2 * 2); // 200ms of stereo S16
