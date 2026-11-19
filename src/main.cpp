@@ -22,7 +22,7 @@
 #include "emulator.h"
 #include "video_filters.h"
 
-#define MESENMD_VERSION "1.0.13"
+#define MESENMD_VERSION "1.0.14"
 #define MESENMD_AUTHOR    "sbabybird"
 #define MESENMD_REPO_URL  "https://github.com/sbabybird/MesenMD"
 
@@ -2449,6 +2449,11 @@ static void handleEvent(const SDL_Event& e)
             SDL_free(e.drop.file);
         }
     }
+    else if (e.type == SDL_WINDOWEVENT)
+    {
+        if (e.window.event == SDL_WINDOWEVENT_FOCUS_GAINED)
+            SDL_StopTextInput();
+    }
     else if (e.type == SDL_CONTROLLERDEVICEADDED || e.type == SDL_JOYDEVICEADDED)
     {
         openPad((e.type == SDL_CONTROLLERDEVICEADDED) ? e.cdevice.which : e.jdevice.which);
@@ -2632,6 +2637,9 @@ int main(int argc, char** argv)
     }
     SDL_GL_MakeCurrent(g_window, g_glContext);
     SDL_GL_SetSwapInterval(1);
+    // No text fields exist; keep the system IME off so a Chinese/Japanese IME
+    // doesn't swallow SDL_KEYDOWN events and the SDL keyboard state.
+    SDL_StopTextInput();
 
     if (g_cfg.fullscreen)
         SDL_SetWindowFullscreen(g_window, SDL_WINDOW_FULLSCREEN_DESKTOP);
@@ -2700,6 +2708,9 @@ int main(int argc, char** argv)
     while (g_running)
     {
         Uint64 frameStart = SDL_GetPerformanceCounter();
+        // Keep text input / IME off every frame (no text fields in this app).
+        if (SDL_IsTextInputActive())
+            SDL_StopTextInput();
 
         if (g_quitRequested)
         {
