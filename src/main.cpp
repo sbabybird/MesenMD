@@ -22,7 +22,7 @@
 #include "emulator.h"
 #include "video_filters.h"
 
-#define MESENMD_VERSION "1.0.12"
+#define MESENMD_VERSION "1.0.13"
 #define MESENMD_AUTHOR    "sbabybird"
 #define MESENMD_REPO_URL  "https://github.com/sbabybird/MesenMD"
 
@@ -88,6 +88,43 @@ static const SDL_GameControllerButton g_defaultHotkeyButton[HK_COUNT] =
     SDL_CONTROLLER_BUTTON_A,             // Pause       (Select + A)
     SDL_CONTROLLER_BUTTON_B              // Fullscreen  (Select + B)
 };
+
+#define MAX_HOTKEY_KEYS_PER_ACTION 16
+
+// A single keyboard hotkey binding: key + required modifiers + optional state slot.
+struct HotkeyKey
+{
+    SDL_Scancode scancode = SDL_SCANCODE_UNKNOWN;
+    Uint16 mod = 0;   // required modifiers (KMOD_CTRL/KMOD_SHIFT/KMOD_ALT/KMOD_GUI)
+    int  slot = 0;    // state slot index (1..10); 0 = default slot
+};
+
+static const HotkeyKey g_defaultHotkeyKeys[HK_COUNT][MAX_HOTKEY_KEYS_PER_ACTION] =
+{
+    // Save State  (Shift+F1..F10 -> slot 1..10)
+    { {SDL_SCANCODE_F1, KMOD_SHIFT, 1}, {SDL_SCANCODE_F2, KMOD_SHIFT, 2},
+      {SDL_SCANCODE_F3, KMOD_SHIFT, 3}, {SDL_SCANCODE_F4, KMOD_SHIFT, 4},
+      {SDL_SCANCODE_F5, KMOD_SHIFT, 5}, {SDL_SCANCODE_F6, KMOD_SHIFT, 6},
+      {SDL_SCANCODE_F7, KMOD_SHIFT, 7}, {SDL_SCANCODE_F8, KMOD_SHIFT, 8},
+      {SDL_SCANCODE_F9, KMOD_SHIFT, 9}, {SDL_SCANCODE_F10, KMOD_SHIFT, 10} },
+    // Load State  (F1..F10 -> slot 1..10)
+    { {SDL_SCANCODE_F1, 0, 1}, {SDL_SCANCODE_F2, 0, 2},
+      {SDL_SCANCODE_F3, 0, 3}, {SDL_SCANCODE_F4, 0, 4},
+      {SDL_SCANCODE_F5, 0, 5}, {SDL_SCANCODE_F6, 0, 6},
+      {SDL_SCANCODE_F7, 0, 7}, {SDL_SCANCODE_F8, 0, 8},
+      {SDL_SCANCODE_F9, 0, 9}, {SDL_SCANCODE_F10, 0, 10} },
+    // Reset
+    { {SDL_SCANCODE_F12, 0, 0} },
+    // Exit Game
+    { {SDL_SCANCODE_ESCAPE, 0, 0} },
+    // Quit Program
+    { {SDL_SCANCODE_C, KMOD_CTRL, 0} },
+    // Pause
+    { {SDL_SCANCODE_SPACE, 0, 0} },
+    // Fullscreen
+    { {SDL_SCANCODE_F11, 0, 0} }
+};
+static const int g_defaultHotkeyKeyCount[HK_COUNT] = {10, 10, 1, 1, 1, 1, 1};
 
 #define MAX_KEYS_PER_ACTION 8
 #define MAX_PAD_BINDINGS_PER_ACTION 8
@@ -175,6 +212,8 @@ struct Config
     bool hotkeyEnabled[HK_COUNT];
     SDL_GameControllerButton hotkeyMod[HK_COUNT];
     SDL_GameControllerButton hotkeyButton[HK_COUNT];
+    HotkeyKey hotkeyKeys[HK_COUNT][MAX_HOTKEY_KEYS_PER_ACTION];
+    int  hotkeyKeyCount[HK_COUNT];
     std::map<std::string, PadMap> padMaps;
 
     Config()
@@ -194,6 +233,14 @@ struct Config
             hotkeyEnabled[h] = true;
             hotkeyMod[h] = g_defaultHotkeyMod[h];
             hotkeyButton[h] = g_defaultHotkeyButton[h];
+        }
+        for (int h = 0; h < HK_COUNT; ++h)
+        {
+            hotkeyKeyCount[h] = 0;
+            for (int k = 0; k < g_defaultHotkeyKeyCount[h]; ++k)
+                addHotkeyKey(h, g_defaultHotkeyKeys[h][k].scancode,
+                             g_defaultHotkeyKeys[h][k].mod,
+                             g_defaultHotkeyKeys[h][k].slot);
         }
     }
 
@@ -215,6 +262,28 @@ struct Config
         keyCount[action]--;
         if (keyCount[action] == 0)
             keys[action][keyCount[action]++] = SDL_SCANCODE_UNKNOWN;
+    }
+
+    void addHotkeyKey(int h, SDL_Scancode sc, Uint16 mod, int slot)
+    {
+        if (h < 0 || h >= HK_COUNT) return;
+        if (hotkeyKeyCount[h] >= MAX_HOTKEY_KEYS_PER_ACTION) return;
+        for (int i = 0; i < hotkeyKeyCount[h]; ++i)
+            if (hotkeyKeys[h][i].scancode == sc && hotkeyKeys[h][i].mod == mod)
+                return;
+        hotkeyKeys[h][hotkeyKeyCount[h]].scancode = sc;
+        hotkeyKeys[h][hotkeyKeyCount[h]].mod = mod;
+        hotkeyKeys[h][hotkeyKeyCount[h]].slot = slot;
+        hotkeyKeyCount[h]++;
+    }
+
+    void removeHotkeyKey(int h, int slot)
+    {
+        if (h < 0 || h >= HK_COUNT) return;
+        if (slot < 0 || slot >= hotkeyKeyCount[h]) return;
+        for (int i = slot; i + 1 < hotkeyKeyCount[h]; ++i)
+            hotkeyKeys[h][i] = hotkeyKeys[h][i + 1];
+        hotkeyKeyCount[h]--;
     }
 };
 
@@ -258,6 +327,8 @@ static bool g_showAbout   = false;
 static int  g_rebindAction = -1;
 static int  g_rebindSlot   = -1;
 static int  g_rebindHotkey  = -1;
+static int  g_rebindHotkeyKey = -1;
+static int  g_rebindHotkeyKeySlot = -1;
 static SDL_GameControllerButton g_rebindPendingMod = SDL_CONTROLLER_BUTTON_INVALID;
 static int  g_homeIndex = 0;
 static Uint64 g_homeNavRepeatMs = 0;
@@ -381,6 +452,13 @@ static void saveConfig()
         f << "hotkeyMod" << h << "=" << (int)g_cfg.hotkeyMod[h] << "\n";
         f << "hotkeyButton" << h << "=" << (int)g_cfg.hotkeyButton[h] << "\n";
     }
+    for (int h = 0; h < HK_COUNT; ++h)
+        for (int k = 0; k < g_cfg.hotkeyKeyCount[h]; ++k)
+        {
+            f << "hotkeyKey" << h << "_" << k << "=" << (int)g_cfg.hotkeyKeys[h][k].scancode << "\n";
+            f << "hotkeyKeyMod" << h << "_" << k << "=" << (int)g_cfg.hotkeyKeys[h][k].mod << "\n";
+            f << "hotkeyKeySlot" << h << "_" << k << "=" << (int)g_cfg.hotkeyKeys[h][k].slot << "\n";
+        }
     for (auto& kv : g_cfg.padMaps)
     {
         const std::string& guid = kv.first;
@@ -397,6 +475,7 @@ static void loadConfig()
     if (!f) return;
     std::string line;
     bool keyParsed[AID_COUNT] = { false };
+    bool hotkeyKeyParsed[HK_COUNT] = { false };
     while (std::getline(f, line))
     {
         size_t eq = line.find('=');
@@ -430,6 +509,36 @@ static void loadConfig()
             int h = -1;
             if (sscanf(key.c_str() + 12, "%d", &h) == 1 && h >= 0 && h < HK_COUNT)
                 g_cfg.hotkeyButton[h] = (SDL_GameControllerButton)std::atoi(val.c_str());
+        }
+        else if (key.rfind("hotkeyKeyMod", 0) == 0)
+        {
+            int idx = -1, slot = -1;
+            if (sscanf(key.c_str() + 12, "%d_%d", &idx, &slot) == 2 &&
+                idx >= 0 && idx < HK_COUNT && slot >= 0 && slot < MAX_HOTKEY_KEYS_PER_ACTION)
+                g_cfg.hotkeyKeys[idx][slot].mod = (Uint16)std::atoi(val.c_str());
+        }
+        else if (key.rfind("hotkeyKeySlot", 0) == 0)
+        {
+            int idx = -1, slot = -1;
+            if (sscanf(key.c_str() + 13, "%d_%d", &idx, &slot) == 2 &&
+                idx >= 0 && idx < HK_COUNT && slot >= 0 && slot < MAX_HOTKEY_KEYS_PER_ACTION)
+                g_cfg.hotkeyKeys[idx][slot].slot = std::atoi(val.c_str());
+        }
+        else if (key.rfind("hotkeyKey", 0) == 0)
+        {
+            int idx = -1, slot = -1;
+            if (sscanf(key.c_str() + 9, "%d_%d", &idx, &slot) == 2 &&
+                idx >= 0 && idx < HK_COUNT && slot >= 0 && slot < MAX_HOTKEY_KEYS_PER_ACTION)
+            {
+                if (!hotkeyKeyParsed[idx])
+                {
+                    hotkeyKeyParsed[idx] = true;
+                    g_cfg.hotkeyKeyCount[idx] = 0;
+                }
+                g_cfg.hotkeyKeys[idx][slot].scancode = (SDL_Scancode)std::atoi(val.c_str());
+                if (slot + 1 > g_cfg.hotkeyKeyCount[idx])
+                    g_cfg.hotkeyKeyCount[idx] = slot + 1;
+            }
         }
         else if (key.rfind("key", 0) == 0)
         {
@@ -1182,7 +1291,7 @@ static bool modLikeButton(SDL_GameControllerButton b)
            b == SDL_CONTROLLER_BUTTON_RIGHTSTICK;
 }
 
-static void triggerHotkey(int h)
+static void triggerHotkey(int h, int slot = 1)
 {
     bool inGame = g_emu.gameLoaded();
     switch (h)
@@ -1190,7 +1299,7 @@ static void triggerHotkey(int h)
         case HK_SAVE:
             if (inGame)
             {
-                std::string p = slotStatePathForRom(1);
+                std::string p = slotStatePathForRom(slot > 0 ? slot : 1);
                 if (g_emu.saveState(p))
                     g_emu.setLastMessage("State saved.");
             }
@@ -1198,7 +1307,7 @@ static void triggerHotkey(int h)
         case HK_LOAD:
             if (inGame)
             {
-                std::string p = slotStatePathForRom(1);
+                std::string p = slotStatePathForRom(slot > 0 ? slot : 1);
                 if (fileExists(p) && g_emu.loadState(p))
                     g_emu.setLastMessage("State loaded.");
             }
@@ -1219,6 +1328,32 @@ static void triggerHotkey(int h)
             toggleFullscreen();
             break;
     }
+}
+
+static bool hotkeyKeyMatches(Uint16 pressed, Uint16 required)
+{
+    const Uint16 m = (Uint16)(KMOD_CTRL | KMOD_SHIFT | KMOD_ALT | KMOD_GUI);
+    if (required == 0)
+        return (pressed & m) == 0;
+    return (pressed & required) == required;
+}
+
+static bool handleKeyboardHotkey(SDL_Scancode sc, Uint16 mod)
+{
+    for (int h = 0; h < HK_COUNT; ++h)
+    {
+        if (!g_cfg.hotkeyEnabled[h]) continue;
+        for (int k = 0; k < g_cfg.hotkeyKeyCount[h]; ++k)
+        {
+            const HotkeyKey& hk = g_cfg.hotkeyKeys[h][k];
+            if (hk.scancode == sc && hotkeyKeyMatches(mod, hk.mod))
+            {
+                triggerHotkey(h, hk.slot > 0 ? hk.slot : 1);
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 static void handleControllerButton(SDL_GameController* gc, SDL_GameControllerButton button)
@@ -1652,7 +1787,7 @@ static void drawGamepadTab()
     }
 }
 
-static void drawHotkeysTab()
+static void drawGamepadHotkeysTab()
 {
     ImGui::TextWrapped(tr("Hold modifier + press button. Esc cancels rebinding.", "按住修饰键再按按钮。Esc 取消重绑。"));
     if (ImGui::Button(tr("Reset Hotkeys", "重置快捷键")))
@@ -1698,6 +1833,113 @@ static void drawHotkeysTab()
             }
         }
         ImGui::EndTable();
+    }
+}
+
+static std::string hotkeyKeyName(const HotkeyKey& hk)
+{
+    std::string s;
+    if (hk.mod & KMOD_CTRL)  s += "Ctrl+";
+    if (hk.mod & KMOD_ALT)   s += "Alt+";
+    if (hk.mod & KMOD_SHIFT) s += "Shift+";
+    if (hk.mod & KMOD_GUI)   s += "Win+";
+    const char* n = (hk.scancode >= 0 && hk.scancode < SDL_NUM_SCANCODES && g_scancodeNames[hk.scancode])
+        ? g_scancodeNames[hk.scancode] : "?";
+    return s + n;
+}
+
+static void drawKeyboardHotkeysTab()
+{
+    ImGui::TextWrapped(tr("Click a binding, then press a key combination (e.g. Ctrl+C, Shift+F3). '+' adds another binding, 'x' removes one. Esc cancels.", "点击绑定项后按下按键组合（如 Ctrl+C、Shift+F3）。'+' 添加一个组合，'x' 移除。Esc 取消。"));
+    if (ImGui::Button(tr("Reset All", "全部重置")))
+    {
+        for (int h = 0; h < HK_COUNT; ++h)
+        {
+            g_cfg.hotkeyEnabled[h] = true;
+            g_cfg.hotkeyKeyCount[h] = g_defaultHotkeyKeyCount[h];
+            for (int k = 0; k < g_defaultHotkeyKeyCount[h]; ++k)
+                g_cfg.hotkeyKeys[h][k] = g_defaultHotkeyKeys[h][k];
+        }
+        saveConfig();
+    }
+    ImGui::Separator();
+    if (ImGui::BeginTable("hkktbl", 3,
+                          ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg |
+                          ImGuiTableFlags_BordersInnerV, ImVec2(0, 0)))
+    {
+        ImGui::TableSetupColumn(tr("Action", "操作"));
+        ImGui::TableSetupColumn(tr("Bindings", "按键"));
+        ImGui::TableSetupColumn(tr("Reset", "重置"));
+        ImGui::TableHeadersRow();
+        for (int h = 0; h < HK_COUNT; ++h)
+        {
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::Checkbox(("##hken" + std::to_string(h)).c_str(), &g_cfg.hotkeyEnabled[h]);
+            ImGui::SameLine();
+            ImGui::Text("%s", hotkeyName(h));
+            ImGui::TableSetColumnIndex(1);
+            bool removed = false;
+            for (int k = 0; k < g_cfg.hotkeyKeyCount[h]; ++k)
+            {
+                std::string name = (g_rebindHotkeyKey == h && g_rebindHotkeyKeySlot == k)
+                    ? tr("Press key...", "请按键...") : hotkeyKeyName(g_cfg.hotkeyKeys[h][k]);
+                std::string id = name + "##hkk" + std::to_string(h) + "_" + std::to_string(k);
+                if (ImGui::Button(id.c_str(), ImVec2(150, 0)))
+                {
+                    g_rebindHotkeyKey = h;
+                    g_rebindHotkeyKeySlot = k;
+                }
+                ImGui::SameLine();
+                std::string del = "x##hkk" + std::to_string(h) + "_" + std::to_string(k);
+                if (ImGui::SmallButton(del.c_str()))
+                {
+                    g_cfg.removeHotkeyKey(h, k);
+                    if (g_rebindHotkeyKey == h && g_rebindHotkeyKeySlot == k)
+                    { g_rebindHotkeyKey = -1; g_rebindHotkeyKeySlot = -1; }
+                    saveConfig();
+                    removed = true;
+                    break;
+                }
+            }
+            if (!removed && g_cfg.hotkeyKeyCount[h] < MAX_HOTKEY_KEYS_PER_ACTION)
+            {
+                std::string add = "+ " + std::string(tr("Add", "添加")) + "##hkadd" + std::to_string(h);
+                if (ImGui::SmallButton(add.c_str()))
+                {
+                    g_rebindHotkeyKey = h;
+                    g_rebindHotkeyKeySlot = -1;
+                }
+            }
+            ImGui::TableSetColumnIndex(2);
+            std::string r = std::string(tr("Reset", "重置")) + "##hkres" + std::to_string(h);
+            if (ImGui::Button(r.c_str()))
+            {
+                g_cfg.hotkeyKeyCount[h] = g_defaultHotkeyKeyCount[h];
+                for (int k = 0; k < g_defaultHotkeyKeyCount[h]; ++k)
+                    g_cfg.hotkeyKeys[h][k] = g_defaultHotkeyKeys[h][k];
+                saveConfig();
+            }
+        }
+        ImGui::EndTable();
+    }
+}
+
+static void drawHotkeysTab()
+{
+    if (ImGui::BeginTabBar("hotkeytabs"))
+    {
+        if (ImGui::BeginTabItem(tr("Gamepad", "手柄")))
+        {
+            drawGamepadHotkeysTab();
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem(tr("Keyboard", "键盘")))
+        {
+            drawKeyboardHotkeysTab();
+            ImGui::EndTabItem();
+        }
+        ImGui::EndTabBar();
     }
 }
 
@@ -2228,6 +2470,47 @@ static void handleEvent(const SDL_Event& e)
             g_rebindHotkey = -1;
             g_rebindPendingMod = SDL_CONTROLLER_BUTTON_INVALID;
         }
+        else if (g_rebindHotkeyKey >= 0)
+        {
+            if (e.key.keysym.scancode == SDL_SCANCODE_ESCAPE)
+            {
+                g_rebindHotkeyKey = -1;
+                g_rebindHotkeyKeySlot = -1;
+            }
+            else
+            {
+                SDL_Scancode ksc = e.key.keysym.scancode;
+                if (ksc == SDL_SCANCODE_LSHIFT || ksc == SDL_SCANCODE_RSHIFT ||
+                    ksc == SDL_SCANCODE_LCTRL || ksc == SDL_SCANCODE_RCTRL ||
+                    ksc == SDL_SCANCODE_LALT  || ksc == SDL_SCANCODE_RALT ||
+                    ksc == SDL_SCANCODE_LGUI  || ksc == SDL_SCANCODE_RGUI)
+                {
+                    // Keep waiting for the primary key.
+                }
+                else
+                {
+                    int h = g_rebindHotkeyKey;
+                    int slot = g_rebindHotkeyKeySlot;
+                    if (slot < 0 || slot >= g_cfg.hotkeyKeyCount[h])
+                        slot = g_cfg.hotkeyKeyCount[h];
+                    if (slot < MAX_HOTKEY_KEYS_PER_ACTION)
+                    {
+                        Uint16 pressedMod = e.key.keysym.mod;
+                        int fslot = 0;
+                        if (ksc >= SDL_SCANCODE_F1 && ksc <= SDL_SCANCODE_F10)
+                            fslot = (int)(ksc - SDL_SCANCODE_F1 + 1);
+                        g_cfg.hotkeyKeys[h][slot].scancode = ksc;
+                        g_cfg.hotkeyKeys[h][slot].mod = pressedMod;
+                        g_cfg.hotkeyKeys[h][slot].slot = fslot;
+                        if (slot >= g_cfg.hotkeyKeyCount[h])
+                            g_cfg.hotkeyKeyCount[h] = slot + 1;
+                        saveConfig();
+                    }
+                    g_rebindHotkeyKey = -1;
+                    g_rebindHotkeyKeySlot = -1;
+                }
+            }
+        }
         else if (g_rebindAction >= 0)
         {
             if (e.key.keysym.scancode == SDL_SCANCODE_ESCAPE)
@@ -2252,10 +2535,13 @@ static void handleEvent(const SDL_Event& e)
         }
         else
         {
+            if (e.key.repeat)
+                return;
+
             SDL_Scancode sc = e.key.keysym.scancode;
             Uint16 mod = e.key.keysym.mod;
 
-            // ESC: close an open dialog first, otherwise exit the game (auto-saves).
+            // While rebinding a pad action, ESC cancels that rebinding.
             if (sc == SDL_SCANCODE_ESCAPE && g_rebindPadAction >= 0)
             {
                 g_rebindPad = -1;
@@ -2263,54 +2549,34 @@ static void handleEvent(const SDL_Event& e)
                 g_rebindPadSlot = -1;
                 g_padRebindReady = false;
             }
-            else if (sc == SDL_SCANCODE_ESCAPE)
+            else if (sc == SDL_SCANCODE_ESCAPE &&
+                     (g_showInput || g_showVideo || g_showAbout))
             {
                 if (g_showInput) g_showInput = false;
                 else if (g_showVideo) g_showVideo = false;
                 else if (g_showAbout) g_showAbout = false;
-                else if (g_emu.gameLoaded()) closeGame();
             }
-
-            // Ctrl+C: quit the program gracefully (saves state + thumbnail).
-            if (sc == SDL_SCANCODE_C && (mod & KMOD_CTRL))
+            else if (g_rebindHotkey >= 0 || g_rebindPadAction >= 0)
             {
-                requestQuit();
+                // Ignore hotkeys while a rebind is pending.
             }
-
-            // F11: toggle fullscreen.
-            if (sc == SDL_SCANCODE_F11)
+            else
             {
-                toggleFullscreen();
-            }
+                // Configurable keyboard hotkeys: ESC exits the game when no
+                // dialog is open, Ctrl+C quits, F11 fullscreen, F1-F10 load,
+                // Shift+F1-F10 save, F12 reset, Space pause.
+                if (handleKeyboardHotkey(sc, mod))
+                    return;
 
-            // F1-F10: quick load; Shift+F1-F10: quick save.
-            if (sc >= SDL_SCANCODE_F1 && sc <= SDL_SCANCODE_F10 && g_emu.gameLoaded())
-            {
-                int slot = sc - SDL_SCANCODE_F1 + 1;
-                std::string p = slotStatePathForRom(slot);
-                if (mod & KMOD_SHIFT)
+                // Fixed menu accelerators.
+                if (sc == SDL_SCANCODE_O && (mod & KMOD_CTRL))
                 {
-                    if (g_emu.saveState(p))
-                        g_emu.setLastMessage("State saved.");
+                    std::string path = openRomDialog(g_window);
+                    if (!path.empty()) loadRom(path);
                 }
-                else
-                {
-                    if (fileExists(p) && g_emu.loadState(p))
-                        g_emu.setLastMessage("State loaded.");
-                }
+                if (sc == SDL_SCANCODE_W && (mod & KMOD_CTRL) && g_emu.gameLoaded())
+                    closeGame();
             }
-
-            if (sc == SDL_SCANCODE_F12 && g_emu.gameLoaded())
-                g_emu.reset();
-            if (sc == SDL_SCANCODE_SPACE && g_emu.gameLoaded())
-                togglePause();
-            if (sc == SDL_SCANCODE_O && (mod & KMOD_CTRL))
-            {
-                std::string path = openRomDialog(g_window);
-                if (!path.empty()) loadRom(path);
-            }
-            if (sc == SDL_SCANCODE_W && (mod & KMOD_CTRL) && g_emu.gameLoaded())
-                closeGame();
         }
     }
 }
