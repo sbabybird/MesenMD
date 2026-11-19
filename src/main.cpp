@@ -22,7 +22,7 @@
 #include "emulator.h"
 #include "video_filters.h"
 
-#define MESENMD_VERSION "1.0.14"
+#define MESENMD_VERSION "1.0.15"
 #define MESENMD_AUTHOR    "sbabybird"
 #define MESENMD_REPO_URL  "https://github.com/sbabybird/MesenMD"
 
@@ -1330,12 +1330,31 @@ static void triggerHotkey(int h, int slot = 1)
     }
 }
 
+// SDL2 reports individual left/right modifier flags (KMOD_LSHIFT, KMOD_LCTRL...),
+// while 'required' uses the combined masks (KMOD_SHIFT, KMOD_CTRL...). Test whether
+// each required modifier group has at least one of its bits set in 'pressed'.
 static bool hotkeyKeyMatches(Uint16 pressed, Uint16 required)
 {
     const Uint16 m = (Uint16)(KMOD_CTRL | KMOD_SHIFT | KMOD_ALT | KMOD_GUI);
     if (required == 0)
         return (pressed & m) == 0;
-    return (pressed & required) == required;
+    if ((required & KMOD_CTRL) && !(pressed & KMOD_CTRL)) return false;
+    if ((required & KMOD_SHIFT) && !(pressed & KMOD_SHIFT)) return false;
+    if ((required & KMOD_ALT) && !(pressed & KMOD_ALT)) return false;
+    if ((required & KMOD_GUI) && !(pressed & KMOD_GUI)) return false;
+    return true;
+}
+
+// Collapse left/right modifier flags into the combined group masks so a binding
+// recorded while pressing Left Ctrl still matches when Right Ctrl is pressed.
+static Uint16 normalizeHotkeyMod(Uint16 mod)
+{
+    Uint16 out = 0;
+    if (mod & KMOD_CTRL)  out |= KMOD_CTRL;
+    if (mod & KMOD_SHIFT) out |= KMOD_SHIFT;
+    if (mod & KMOD_ALT)   out |= KMOD_ALT;
+    if (mod & KMOD_GUI)   out |= KMOD_GUI;
+    return out;
 }
 
 static bool handleKeyboardHotkey(SDL_Scancode sc, Uint16 mod)
@@ -2505,7 +2524,7 @@ static void handleEvent(const SDL_Event& e)
                         if (ksc >= SDL_SCANCODE_F1 && ksc <= SDL_SCANCODE_F10)
                             fslot = (int)(ksc - SDL_SCANCODE_F1 + 1);
                         g_cfg.hotkeyKeys[h][slot].scancode = ksc;
-                        g_cfg.hotkeyKeys[h][slot].mod = pressedMod;
+                        g_cfg.hotkeyKeys[h][slot].mod = normalizeHotkeyMod(pressedMod);
                         g_cfg.hotkeyKeys[h][slot].slot = fslot;
                         if (slot >= g_cfg.hotkeyKeyCount[h])
                             g_cfg.hotkeyKeyCount[h] = slot + 1;

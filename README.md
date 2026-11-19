@@ -4,7 +4,7 @@
 
 > English: [README_EN.md](README_EN.md)
 
-**当前版本：v1.0.14**  ·  Windows (MinGW-w64)  ·  作者：[sbabybird](https://github.com/sbabybird)
+**当前版本：v1.0.15**  ·  Windows (MinGW-w64)  ·  作者：[sbabybird](https://github.com/sbabybird)
 
 - **核心**：[Genesis Plus GX (libretro)](https://github.com/libretro/Genesis-Plus-GX) —— RetroArch 的官方 MD 核心，精度高，支持 MD / Sega CD / Master System / Game Gear。
 - **前端界面**：SDL2 + OpenGL 3 + Dear ImGui，深色主题，行为与外观尽量贴近 Mesen2。
