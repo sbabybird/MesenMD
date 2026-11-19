@@ -22,7 +22,7 @@
 #include "emulator.h"
 #include "video_filters.h"
 
-#define MESENMD_VERSION "1.0.15"
+#define MESENMD_VERSION "1.0.16"
 #define MESENMD_AUTHOR    "sbabybird"
 #define MESENMD_REPO_URL  "https://github.com/sbabybird/MesenMD"
 
@@ -204,6 +204,7 @@ struct Config
     bool autoSaveState = true;    // save/restore game state on close/open
     int  keyboardPlayer = 0;      // joypad slot the keyboard drives (0=P1, 1=P2)
     bool fullscreen = false;      // start the window fullscreen
+    int  aspectRatio = 0;         // video aspect: 0=Auto(core) 1=4:3 2=Original
     int  language = detectSystemLanguage(); // UI language: 0=English, 1=Chinese (defaults to system)
     int  theme = 0;               // UI theme: 0=System(auto), 1=Dark, 2=Light
     SDL_Scancode keys[AID_COUNT][MAX_KEYS_PER_ACTION];
@@ -397,6 +398,13 @@ static const char* comboVideoFilter()
         : "None\0Bilinear\0LCD Grid\0CRT\0Scanlines\0";
 }
 
+static const char* comboAspectRatio()
+{
+    return (g_cfg.language == 1)
+        ? "自动\0" "4:3\0" "原始像素\0"
+        : "Auto\0" "4:3\0" "Original pixels\0";
+}
+
 static const char* comboPlayer()
 {
     return (g_cfg.language == 1)
@@ -442,6 +450,7 @@ static void saveConfig()
             f << "key" << a << "_" << k << "=" << (int)g_cfg.keys[a][k] << "\n";
     f << "keyboardPlayer=" << g_cfg.keyboardPlayer << "\n";
     f << "fullscreen=" << (g_cfg.fullscreen ? 1 : 0) << "\n";
+    f << "aspectRatio=" << g_cfg.aspectRatio << "\n";
     f << "language=" << g_cfg.language << "\n";
     f << "theme=" << g_cfg.theme << "\n";
     for (size_t i = 0; i < g_cfg.recentGames.size(); ++i)
@@ -490,6 +499,7 @@ static void loadConfig()
         else if (key == "autoSaveState") g_cfg.autoSaveState = std::atoi(val.c_str()) != 0;
         else if (key == "keyboardPlayer") g_cfg.keyboardPlayer = std::atoi(val.c_str());
         else if (key == "fullscreen") g_cfg.fullscreen = std::atoi(val.c_str()) != 0;
+        else if (key == "aspectRatio") g_cfg.aspectRatio = std::atoi(val.c_str());
         else if (key == "language") g_cfg.language = std::atoi(val.c_str());
         else if (key == "theme") g_cfg.theme = std::atoi(val.c_str());
         else if (key.rfind("hotkeyEnabled", 0) == 0)
@@ -710,6 +720,12 @@ static void closeGame()
     saveThumbnail();
     g_emu.unloadGame();
     stopAudio();
+    if (g_cfg.fullscreen)
+    {
+        SDL_SetWindowFullscreen(g_window, 0);
+        g_cfg.fullscreen = false;
+        saveConfig();
+    }
     SDL_SetWindowTitle(g_window, "MesenMD");
 }
 
@@ -790,6 +806,11 @@ static void toggleFullscreen()
         SDL_SetWindowFullscreen(g_window, SDL_WINDOW_FULLSCREEN_DESKTOP);
         g_cfg.fullscreen = true;
     }
+}
+
+static bool isFullscreenActive()
+{
+    return (SDL_GetWindowFlags(g_window) & SDL_WINDOW_FULLSCREEN_DESKTOP) != 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -1430,6 +1451,8 @@ static void handleControllerButton(SDL_GameController* gc, SDL_GameControllerBut
 // ---------------------------------------------------------------------------
 static void drawMainMenu()
 {
+    if (isFullscreenActive())
+        return;
     if (ImGui::BeginMainMenuBar())
     {
         if (ImGui::BeginMenu(tr("File", "文件")))
@@ -1533,6 +1556,8 @@ static void drawMainMenu()
 
 static void drawStatusBar()
 {
+    if (isFullscreenActive())
+        return;
     ImGuiViewport* vp = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x, vp->WorkPos.y + vp->WorkSize.y - 24));
     ImGui::SetNextWindowSize(ImVec2(vp->WorkSize.x, 24));
@@ -1570,6 +1595,7 @@ static void drawVideoSettings()
     {
         ImGui::Combo(tr("Window scale", "窗口缩放"), &g_cfg.videoScale, comboWindowScale());
         ImGui::Combo(tr("Video filter", "视频滤镜"), &g_cfg.videoFilter, comboVideoFilter());
+        ImGui::Combo(tr("Aspect ratio", "宽高比"), &g_cfg.aspectRatio, comboAspectRatio());
         ImGui::Checkbox(tr("Bilinear when no filter", "无滤镜时使用双线性"), &g_cfg.filterBilinear);
         ImGui::Checkbox(tr("Show FPS in status bar", "在状态栏显示帧率"), &g_cfg.showFps);
         ImGui::Checkbox(tr("Enable audio", "启用音频"), &g_cfg.audioEnabled);
@@ -2391,8 +2417,8 @@ static void drawHomePage()
 static void drawViewport()
 {
     ImGuiViewport* vp = ImGui::GetMainViewport();
-    float yTop = vp->WorkPos.y + ImGui::GetFrameHeight();
-    float yBottom = vp->WorkPos.y + vp->WorkSize.y - 24;
+    float yTop = vp->WorkPos.y + (isFullscreenActive() ? 0.0f : ImGui::GetFrameHeight());
+    float yBottom = vp->WorkPos.y + vp->WorkSize.y - (isFullscreenActive() ? 0.0f : 24.0f);
     ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x, yTop));
     ImGui::SetNextWindowSize(ImVec2(vp->WorkSize.x, yBottom - yTop));
     ImGui::Begin("Game", nullptr,
@@ -2420,6 +2446,15 @@ static void drawViewport()
     if (baseW <= 0 || baseH <= 0) baseW = 320, baseH = 224;
 
     float aspect = (float)baseW / (float)baseH;
+    if (g_cfg.aspectRatio == 0)
+    {
+        float ga = g_emu.avInfo().geometry.aspect_ratio;
+        if (ga > 0.0f) aspect = ga;
+    }
+    else if (g_cfg.aspectRatio == 1)
+    {
+        aspect = 4.0f / 3.0f;
+    }
     float destW = avail.x;
     float destH = destW / aspect;
     if (destH > avail.y) { destH = avail.y; destW = destH * aspect; }
@@ -2612,6 +2647,8 @@ int main(int argc, char** argv)
 
     populateScancodeNames();
     loadConfig();
+    // Always launch windowed; fullscreen is a runtime toggle only (F11).
+    g_cfg.fullscreen = false;
     SetConsoleCtrlHandler(consoleCtrlHandler, TRUE);
 
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER) != 0)
@@ -2659,9 +2696,6 @@ int main(int argc, char** argv)
     // No text fields exist; keep the system IME off so a Chinese/Japanese IME
     // doesn't swallow SDL_KEYDOWN events and the SDL keyboard state.
     SDL_StopTextInput();
-
-    if (g_cfg.fullscreen)
-        SDL_SetWindowFullscreen(g_window, SDL_WINDOW_FULLSCREEN_DESKTOP);
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
