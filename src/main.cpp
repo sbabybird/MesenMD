@@ -22,7 +22,7 @@
 #include "emulator.h"
 #include "video_filters.h"
 
-#define MESENMD_VERSION "1.0.5"
+#define MESENMD_VERSION "1.0.6"
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -88,6 +88,47 @@ static const SDL_GameControllerButton g_defaultHotkeyButton[HK_COUNT] =
 };
 
 #define MAX_KEYS_PER_ACTION 8
+#define MAX_PAD_BINDINGS_PER_ACTION 8
+
+// A single controller input, encoded as (kind << 16) | index.
+enum PadInputKind
+{
+    PAD_BUTTON   = 0,
+    PAD_AXIS_NEG = 1,
+    PAD_AXIS_POS = 2,
+    PAD_HAT_UP   = 3,
+    PAD_HAT_DOWN = 4,
+    PAD_HAT_LEFT = 5,
+    PAD_HAT_RIGHT= 6
+};
+
+static int  padInput(int kind, int index) { return (kind << 16) | (index & 0xffff); }
+static int  padInputKind(int code)        { return (code >> 16) & 0xf; }
+static int  padInputIndex(int code)       { return code & 0xffff; }
+
+// Per-device controller mapping: each MD action can be bound to several
+// controller inputs (buttons / stick axes / D-pad hats).
+struct PadMap
+{
+    int map[AID_COUNT][MAX_PAD_BINDINGS_PER_ACTION] = {};
+    int mapCount[AID_COUNT] = {};
+};
+
+// A connected pad, opened either as a standard SDL_GameController or as a
+// raw SDL_Joystick (so DirectInput / unrecognised pads are also usable).
+struct Pad
+{
+    SDL_GameController* gc     = nullptr;
+    SDL_Joystick*       joy    = nullptr;
+    SDL_JoystickID      instanceId = 0;
+    std::string         name;
+    std::string         guid;
+    int                 player = 0;
+    int                 buttonCount = 0;
+    int                 axisCount   = 0;
+    int                 hatCount    = 0;
+    PadMap              map;
+};
 
 static const SDL_Scancode g_defaultKeys[AID_COUNT][MAX_KEYS_PER_ACTION] =
 {
@@ -124,6 +165,7 @@ struct Config
     bool hotkeyEnabled[HK_COUNT];
     SDL_GameControllerButton hotkeyMod[HK_COUNT];
     SDL_GameControllerButton hotkeyButton[HK_COUNT];
+    std::map<std::string, PadMap> padMaps;
 
     Config()
     {
@@ -229,8 +271,11 @@ static BOOL WINAPI consoleCtrlHandler(DWORD type)
     return FALSE;
 }
 
-static std::vector<SDL_GameController*> g_controllers;
-static std::vector<int> g_controllerPlayer;
+static std::vector<Pad> g_pads;
+static int  g_rebindPad        = -1;
+static int  g_rebindPadAction  = -1;
+static int  g_rebindPadSlot    = -1;
+static bool g_padRebindReady   = false;
 
 // ---------------------------------------------------------------------------
 // Localization
@@ -324,6 +369,14 @@ static void saveConfig()
         f << "hotkeyMod" << h << "=" << (int)g_cfg.hotkeyMod[h] << "\n";
         f << "hotkeyButton" << h << "=" << (int)g_cfg.hotkeyButton[h] << "\n";
     }
+    for (auto& kv : g_cfg.padMaps)
+    {
+        const std::string& guid = kv.first;
+        const PadMap& pm = kv.second;
+        for (int a = 0; a < AID_COUNT; ++a)
+            for (int k = 0; k < pm.mapCount[a]; ++k)
+                f << "padmap." << guid << "." << a << "." << k << "=" << pm.map[a][k] << "\n";
+    }
 }
 
 static void loadConfig()
@@ -381,6 +434,29 @@ static void loadConfig()
                 g_cfg.keys[idx][slot] = (SDL_Scancode)std::atoi(val.c_str());
                 if (slot + 1 > g_cfg.keyCount[idx])
                     g_cfg.keyCount[idx] = slot + 1;
+            }
+        }
+        else if (key.rfind("padmap.", 0) == 0)
+        {
+            std::string rest = key.substr(7);
+            size_t d1 = rest.find('.');
+            if (d1 != std::string::npos)
+            {
+                std::string guid = rest.substr(0, d1);
+                std::string rest2 = rest.substr(d1 + 1);
+                size_t d2 = rest2.find('.');
+                if (d2 != std::string::npos)
+                {
+                    int action = std::atoi(rest2.substr(0, d2).c_str());
+                    int slot   = std::atoi(rest2.substr(d2 + 1).c_str());
+                    if (action >= 0 && action < AID_COUNT && slot >= 0 && slot < MAX_PAD_BINDINGS_PER_ACTION)
+                    {
+                        PadMap& pm = g_cfg.padMaps[guid];
+                        pm.map[action][slot] = std::atoi(val.c_str());
+                        if (slot + 1 > pm.mapCount[action])
+                            pm.mapCount[action] = slot + 1;
+                    }
+                }
             }
         }
         else if (key == "recent")
@@ -717,83 +793,315 @@ static void updateVideoTexture()
 // ---------------------------------------------------------------------------
 // Input
 // ---------------------------------------------------------------------------
-static void openController(int deviceIndex)
+static std::string padGUID(SDL_Joystick* joy)
 {
-    if (deviceIndex < 0 || deviceIndex >= SDL_NumJoysticks())
-        return;
-    if (!SDL_IsGameController(deviceIndex))
-        return;
-    SDL_GameController* gc = SDL_GameControllerOpen(deviceIndex);
-    if (!gc)
-        return;
-    g_controllers.push_back(gc);
-    g_controllerPlayer.push_back((int)((g_controllers.size() - 1) % 2));
+    SDL_JoystickGUID g = SDL_JoystickGetGUID(joy);
+    char buf[64] = { 0 };
+    SDL_JoystickGetGUIDString(g, buf, sizeof(buf));
+    return buf;
 }
 
-static void closeController(SDL_JoystickID instanceId)
+static void resetPadMappingToDefault(Pad& pad)
 {
-    for (size_t i = 0; i < g_controllers.size(); ++i)
+    for (int a = 0; a < AID_COUNT; ++a)
     {
-        SDL_Joystick* joy = SDL_GameControllerGetJoystick(g_controllers[i]);
-        if (joy && SDL_JoystickInstanceID(joy) == instanceId)
+        pad.map.mapCount[a] = 0;
+        for (int k = 0; k < MAX_PAD_BINDINGS_PER_ACTION; ++k)
+            pad.map.map[a][k] = 0;
+    }
+    auto add = [&](int a, int code)
+    {
+        if (a >= 0 && a < AID_COUNT && pad.map.mapCount[a] < MAX_PAD_BINDINGS_PER_ACTION)
+            pad.map.map[a][pad.map.mapCount[a]++] = code;
+    };
+    if (pad.gc)
+    {
+        add(AID_A,     padInput(PAD_BUTTON, SDL_CONTROLLER_BUTTON_X));
+        add(AID_B,     padInput(PAD_BUTTON, SDL_CONTROLLER_BUTTON_A));
+        add(AID_C,     padInput(PAD_BUTTON, SDL_CONTROLLER_BUTTON_B));
+        add(AID_X,     padInput(PAD_BUTTON, SDL_CONTROLLER_BUTTON_LEFTSHOULDER));
+        add(AID_Y,     padInput(PAD_BUTTON, SDL_CONTROLLER_BUTTON_Y));
+        add(AID_Z,     padInput(PAD_BUTTON, SDL_CONTROLLER_BUTTON_RIGHTSHOULDER));
+        add(AID_START, padInput(PAD_BUTTON, SDL_CONTROLLER_BUTTON_START));
+        add(AID_MODE,  padInput(PAD_BUTTON, SDL_CONTROLLER_BUTTON_BACK));
+        add(AID_UP,    padInput(PAD_BUTTON, SDL_CONTROLLER_BUTTON_DPAD_UP));
+        add(AID_DOWN,  padInput(PAD_BUTTON, SDL_CONTROLLER_BUTTON_DPAD_DOWN));
+        add(AID_LEFT,  padInput(PAD_BUTTON, SDL_CONTROLLER_BUTTON_DPAD_LEFT));
+        add(AID_RIGHT, padInput(PAD_BUTTON, SDL_CONTROLLER_BUTTON_DPAD_RIGHT));
+    }
+    else
+    {
+        if (pad.hatCount > 0)
         {
-            SDL_GameControllerClose(g_controllers[i]);
-            g_controllers.erase(g_controllers.begin() + i);
-            g_controllerPlayer.erase(g_controllerPlayer.begin() + i);
-            return;
+            add(AID_UP,    padInput(PAD_HAT_UP, 0));
+            add(AID_DOWN,  padInput(PAD_HAT_DOWN, 0));
+            add(AID_LEFT,  padInput(PAD_HAT_LEFT, 0));
+            add(AID_RIGHT, padInput(PAD_HAT_RIGHT, 0));
         }
+        else if (pad.axisCount >= 2)
+        {
+            add(AID_LEFT,  padInput(PAD_AXIS_NEG, 0));
+            add(AID_RIGHT, padInput(PAD_AXIS_POS, 0));
+            add(AID_UP,    padInput(PAD_AXIS_NEG, 1));
+            add(AID_DOWN,  padInput(PAD_AXIS_POS, 1));
+        }
+        else if (pad.buttonCount >= 10)
+        {
+            // Cheap DirectInput pads often expose a button-based D-pad as the
+            // highest-numbered buttons. Bind the last four (which sit above the
+            // six face buttons 0-5) so the D-pad works even when there is no
+            // hat or stick to read, without colliding with the face buttons.
+            add(AID_UP,    padInput(PAD_BUTTON, pad.buttonCount - 4));
+            add(AID_DOWN,  padInput(PAD_BUTTON, pad.buttonCount - 3));
+            add(AID_LEFT,  padInput(PAD_BUTTON, pad.buttonCount - 2));
+            add(AID_RIGHT, padInput(PAD_BUTTON, pad.buttonCount - 1));
+        }
+        if (pad.buttonCount >= 1) add(AID_A, padInput(PAD_BUTTON, 0));
+        if (pad.buttonCount >= 2) add(AID_B, padInput(PAD_BUTTON, 1));
+        if (pad.buttonCount >= 3) add(AID_C, padInput(PAD_BUTTON, 2));
+        if (pad.buttonCount >= 4) add(AID_X, padInput(PAD_BUTTON, 3));
+        if (pad.buttonCount >= 5) add(AID_Y, padInput(PAD_BUTTON, 4));
+        if (pad.buttonCount >= 6) add(AID_Z, padInput(PAD_BUTTON, 5));
     }
 }
 
-static void enumerateControllers()
+static void openPad(int deviceIndex)
 {
-    for (int i = 0; i < SDL_NumJoysticks(); ++i)
-        openController(i);
+    if (deviceIndex < 0 || deviceIndex >= SDL_NumJoysticks())
+        return;
+    SDL_JoystickID instanceId = SDL_JoystickGetDeviceInstanceID(deviceIndex);
+    if (instanceId < 0)
+        return;
+    for (const Pad& p : g_pads)
+        if (p.instanceId == instanceId)
+            return;
+
+    Pad pad;
+    if (SDL_IsGameController(deviceIndex))
+    {
+        pad.gc = SDL_GameControllerOpen(deviceIndex);
+        if (!pad.gc)
+            return;
+        pad.joy = SDL_GameControllerGetJoystick(pad.gc);
+    }
+    else
+    {
+        pad.joy = SDL_JoystickOpen(deviceIndex);
+        if (!pad.joy)
+            return;
+    }
+
+    pad.instanceId   = instanceId;
+    pad.name         = (SDL_JoystickName(pad.joy) && *SDL_JoystickName(pad.joy)) ? SDL_JoystickName(pad.joy) : tr("Gamepad", "手柄");
+    pad.guid         = padGUID(pad.joy);
+    pad.buttonCount  = SDL_JoystickNumButtons(pad.joy);
+    pad.axisCount    = SDL_JoystickNumAxes(pad.joy);
+    pad.hatCount     = SDL_JoystickNumHats(pad.joy);
+    pad.player       = (int)(g_pads.size() % 2);
+
+    auto it = g_cfg.padMaps.find(pad.guid);
+    if (it != g_cfg.padMaps.end())
+        pad.map = it->second;
+    else
+        resetPadMappingToDefault(pad);
+
+    g_pads.push_back(pad);
 }
 
-static void shutdownControllers()
+static void closePad(SDL_JoystickID instanceId)
 {
-    for (SDL_GameController* gc : g_controllers)
-        SDL_GameControllerClose(gc);
-    g_controllers.clear();
-    g_controllerPlayer.clear();
+    for (size_t i = 0; i < g_pads.size(); ++i)
+    {
+        if (g_pads[i].instanceId != instanceId)
+            continue;
+        if (g_pads[i].gc)
+            SDL_GameControllerClose(g_pads[i].gc);
+        else if (g_pads[i].joy)
+            SDL_JoystickClose(g_pads[i].joy);
+        if (g_rebindPad == (int)i)
+        {
+            g_rebindPad = -1;
+            g_rebindPadAction = -1;
+            g_rebindPadSlot = -1;
+            g_padRebindReady = false;
+        }
+        g_pads.erase(g_pads.begin() + i);
+        return;
+    }
+}
+
+static void enumeratePads()
+{
+    for (int i = 0; i < SDL_NumJoysticks(); ++i)
+        openPad(i);
+}
+
+static void shutdownPads()
+{
+    for (Pad& p : g_pads)
+    {
+        if (p.gc)
+            SDL_GameControllerClose(p.gc);
+        else if (p.joy)
+            SDL_JoystickClose(p.joy);
+    }
+    g_pads.clear();
 }
 
 static SDL_GameController* findController(SDL_JoystickID instanceId)
 {
-    for (SDL_GameController* gc : g_controllers)
-    {
-        SDL_Joystick* joy = SDL_GameControllerGetJoystick(gc);
-        if (joy && SDL_JoystickInstanceID(joy) == instanceId)
-            return gc;
-    }
+    for (Pad& p : g_pads)
+        if (p.gc && p.instanceId == instanceId)
+            return p.gc;
     return nullptr;
 }
 
-// Map a standard SDL_GameController to a libretro joypad bitmask.
-static uint32_t controllerMask(SDL_GameController* gc)
+static const char* buttonName(SDL_GameControllerButton b);
+static bool padInputActive(const Pad& pad, int code)
+{
+    int kind = padInputKind(code);
+    int idx  = padInputIndex(code);
+    switch (kind)
+    {
+        case PAD_BUTTON:
+            if (pad.gc)
+                return (idx < (int)SDL_CONTROLLER_BUTTON_MAX)
+                    ? SDL_GameControllerGetButton(pad.gc, (SDL_GameControllerButton)idx) != 0
+                    : false;
+            return SDL_JoystickGetButton(pad.joy, idx) != 0;
+        case PAD_AXIS_NEG:
+        case PAD_AXIS_POS:
+        {
+            int v;
+            if (pad.gc)
+            {
+                if (idx >= (int)SDL_CONTROLLER_AXIS_MAX) return false;
+                v = SDL_GameControllerGetAxis(pad.gc, (SDL_GameControllerAxis)idx);
+            }
+            else
+            {
+                v = SDL_JoystickGetAxis(pad.joy, idx);
+            }
+            return (kind == PAD_AXIS_NEG) ? (v < -20000) : (v > 20000);
+        }
+        case PAD_HAT_UP:
+        case PAD_HAT_DOWN:
+        case PAD_HAT_LEFT:
+        case PAD_HAT_RIGHT:
+        {
+            Uint8 hat = SDL_JoystickGetHat(pad.joy, idx);
+            switch (kind)
+            {
+                case PAD_HAT_UP:    return (hat & SDL_HAT_UP) != 0;
+                case PAD_HAT_DOWN:  return (hat & SDL_HAT_DOWN) != 0;
+                case PAD_HAT_LEFT:  return (hat & SDL_HAT_LEFT) != 0;
+                case PAD_HAT_RIGHT: return (hat & SDL_HAT_RIGHT) != 0;
+            }
+            return false;
+        }
+    }
+    return false;
+}
+
+static int firstActivePadInput(const Pad& pad)
+{
+    int bCount = pad.gc ? ((pad.buttonCount < (int)SDL_CONTROLLER_BUTTON_MAX) ? pad.buttonCount : (int)SDL_CONTROLLER_BUTTON_MAX)
+                        : pad.buttonCount;
+    for (int b = 0; b < bCount; ++b)
+        if (padInputActive(pad, padInput(PAD_BUTTON, b)))
+            return padInput(PAD_BUTTON, b);
+    for (int h = 0; h < pad.hatCount; ++h)
+    {
+        Uint8 hat = SDL_JoystickGetHat(pad.joy, h);
+        if (hat & SDL_HAT_UP)    return padInput(PAD_HAT_UP, h);
+        if (hat & SDL_HAT_DOWN)  return padInput(PAD_HAT_DOWN, h);
+        if (hat & SDL_HAT_LEFT)  return padInput(PAD_HAT_LEFT, h);
+        if (hat & SDL_HAT_RIGHT) return padInput(PAD_HAT_RIGHT, h);
+    }
+    int axCount = pad.gc ? ((pad.axisCount < (int)SDL_CONTROLLER_AXIS_MAX) ? pad.axisCount : (int)SDL_CONTROLLER_AXIS_MAX)
+                         : pad.axisCount;
+    for (int ax = 0; ax < axCount; ++ax)
+    {
+        int v = pad.gc ? SDL_GameControllerGetAxis(pad.gc, (SDL_GameControllerAxis)ax)
+                       : SDL_JoystickGetAxis(pad.joy, ax);
+        if (v < -20000) return padInput(PAD_AXIS_NEG, ax);
+        if (v >  20000) return padInput(PAD_AXIS_POS, ax);
+    }
+    return -1;
+}
+
+static std::string padInputName(const Pad& pad, int code)
+{
+    int kind = padInputKind(code), idx = padInputIndex(code);
+    char buf[32];
+    if (kind == PAD_BUTTON)
+    {
+        if (pad.gc && idx >= 0 && idx < (int)SDL_CONTROLLER_BUTTON_MAX)
+            return buttonName((SDL_GameControllerButton)idx);
+        snprintf(buf, sizeof(buf), "%s %d", tr("Button", "按钮"), idx);
+        return buf;
+    }
+    if (kind == PAD_AXIS_NEG) { snprintf(buf, sizeof(buf), "%s %d -", tr("Axis", "轴"), idx); return buf; }
+    if (kind == PAD_AXIS_POS) { snprintf(buf, sizeof(buf), "%s %d +", tr("Axis", "轴"), idx); return buf; }
+    if (kind == PAD_HAT_UP)    return tr("D-Pad Up", "方向键上");
+    if (kind == PAD_HAT_DOWN)  return tr("D-Pad Down", "方向键下");
+    if (kind == PAD_HAT_LEFT)  return tr("D-Pad Left", "方向键左");
+    if (kind == PAD_HAT_RIGHT) return tr("D-Pad Right", "方向键右");
+    return "?";
+}
+
+static uint32_t padMask(const Pad& pad)
 {
     uint32_t m = 0;
-    if (SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_A)) m |= (1u << RETRO_DEVICE_ID_JOYPAD_B);
-    if (SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_B)) m |= (1u << RETRO_DEVICE_ID_JOYPAD_A);
-    if (SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_X)) m |= (1u << RETRO_DEVICE_ID_JOYPAD_Y);
-    if (SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_Y)) m |= (1u << RETRO_DEVICE_ID_JOYPAD_X);
-    if (SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_BACK))  m |= (1u << RETRO_DEVICE_ID_JOYPAD_SELECT);
-    if (SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_START)) m |= (1u << RETRO_DEVICE_ID_JOYPAD_START);
-    if (SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_GUIDE)) m |= (1u << RETRO_DEVICE_ID_JOYPAD_SELECT);
-    if (SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_LEFTSHOULDER)) m |= (1u << RETRO_DEVICE_ID_JOYPAD_L);
-    if (SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_RIGHTSHOULDER)) m |= (1u << RETRO_DEVICE_ID_JOYPAD_R);
-    if (SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_DPAD_UP))    m |= (1u << RETRO_DEVICE_ID_JOYPAD_UP);
-    if (SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_DPAD_DOWN))  m |= (1u << RETRO_DEVICE_ID_JOYPAD_DOWN);
-    if (SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_DPAD_LEFT))  m |= (1u << RETRO_DEVICE_ID_JOYPAD_LEFT);
-    if (SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_DPAD_RIGHT)) m |= (1u << RETRO_DEVICE_ID_JOYPAD_RIGHT);
-    int lx = SDL_GameControllerGetAxis(gc, SDL_CONTROLLER_AXIS_LEFTX);
-    int ly = SDL_GameControllerGetAxis(gc, SDL_CONTROLLER_AXIS_LEFTY);
-    if (lx > 20000)  m |= (1u << RETRO_DEVICE_ID_JOYPAD_RIGHT);
-    if (lx < -20000) m |= (1u << RETRO_DEVICE_ID_JOYPAD_LEFT);
-    if (ly > 20000)  m |= (1u << RETRO_DEVICE_ID_JOYPAD_DOWN);
-    if (ly < -20000) m |= (1u << RETRO_DEVICE_ID_JOYPAD_UP);
+    for (int a = 0; a < AID_COUNT; ++a)
+        for (int k = 0; k < pad.map.mapCount[a]; ++k)
+            if (padInputActive(pad, pad.map.map[a][k]))
+                m |= (1u << actionToRetroId(a));
     return m;
+}
+
+static void pollPadRebind()
+{
+    if (g_rebindPadAction < 0)
+        return;
+    if (g_rebindPad < 0 || g_rebindPad >= (int)g_pads.size())
+    {
+        g_rebindPad = -1;
+        g_rebindPadAction = -1;
+        g_rebindPadSlot = -1;
+        g_padRebindReady = false;
+        return;
+    }
+    Pad& pad = g_pads[g_rebindPad];
+    int active = firstActivePadInput(pad);
+    if (active < 0)
+    {
+        g_padRebindReady = true;
+        return;
+    }
+    if (!g_padRebindReady)
+        return;
+    int a = g_rebindPadAction;
+    int slot = g_rebindPadSlot;
+    if (slot < 0 || slot >= pad.map.mapCount[a])
+        slot = pad.map.mapCount[a];
+    if (slot >= MAX_PAD_BINDINGS_PER_ACTION)
+    {
+        g_rebindPad = -1;
+        g_rebindPadAction = -1;
+        g_rebindPadSlot = -1;
+        g_padRebindReady = false;
+        return;
+    }
+    pad.map.map[a][slot] = active;
+    if (slot + 1 > pad.map.mapCount[a])
+        pad.map.mapCount[a] = slot + 1;
+    g_cfg.padMaps[pad.guid] = pad.map;
+    saveConfig();
+    g_rebindPad = -1;
+    g_rebindPadAction = -1;
+    g_rebindPadSlot = -1;
+    g_padRebindReady = false;
 }
 
 static void updateInput()
@@ -804,7 +1112,6 @@ static void updateInput()
     const Uint8* keys = SDL_GetKeyboardState(nullptr);
     uint32_t mask[4] = {0, 0, 0, 0};
 
-    // Keyboard -> the configured player slot (default Player 1).
     {
         int p = (g_cfg.keyboardPlayer >= 0 && g_cfg.keyboardPlayer < 2) ? g_cfg.keyboardPlayer : 0;
         uint32_t m = 0;
@@ -815,18 +1122,16 @@ static void updateInput()
         mask[p] |= m;
     }
 
-    // Gamepads: each connected controller drives its assigned player slot.
-    for (size_t i = 0; i < g_controllers.size(); ++i)
+    for (size_t i = 0; i < g_pads.size(); ++i)
     {
-        int p = g_controllerPlayer[i];
+        int p = g_pads[i].player;
         if (p < 0 || p >= 2) p = 0;
-        mask[p] |= controllerMask(g_controllers[i]);
+        mask[p] |= padMask(g_pads[i]);
     }
 
     g_emu.setJoypadMask(0, mask[0]);
     g_emu.setJoypadMask(1, mask[1]);
 }
-
 
 static const char* buttonName(SDL_GameControllerButton b)
 {
@@ -934,6 +1239,10 @@ static void handleControllerButton(SDL_GameController* gc, SDL_GameControllerBut
         saveConfig();
         return;
     }
+
+    // While rebinding a pad action, do not let hotkeys fire.
+    if (g_rebindPadAction >= 0)
+        return;
 
     for (int h = 0; h < HK_COUNT; ++h)
     {
@@ -1098,53 +1407,52 @@ static void drawVideoSettings()
     }
 }
 
-static void drawInputSettings()
+static void drawKeyboardTab()
 {
-    if (!g_showInput) return;
-    ImGui::SetNextWindowSize(ImVec2(760, 540), ImGuiCond_FirstUseEver);
-    if (ImGui::Begin(tr("Input", "输入"), &g_showInput))
+    ImGui::TextWrapped(tr("Click a binding, then press a key to change it. '+' adds an extra binding, 'x' removes one. The keyboard and every connected gamepad drive the player at the same time.", "点击绑定项后按键盘即可更改。'+' 添加一个按键，'x' 移除按键。键盘和所有已连接的手柄会同时驱动玩家。"));
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(150);
+    ImGui::Combo("##kbplayer", &g_cfg.keyboardPlayer, comboPlayer());
+    if (ImGui::Button(tr("Reset All", "全部重置")))
     {
-        ImGui::TextWrapped(tr("Click a binding, then press a key to change it. '+' adds an extra key, 'x' removes one. The keyboard and every connected gamepad drive the player at the same time.", "点击绑定项后按键盘即可更改。'+' 添加按键，'x' 移除按键。键盘和所有已连接的手柄会同时驱动玩家。"));
-
-        ImGui::Separator();
-        ImGui::Text(tr("Keyboard", "键盘"));
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(150);
-        ImGui::Combo("##kbplayer", &g_cfg.keyboardPlayer, comboPlayer());
-
-        ImGui::Separator();
-        ImGui::Columns(3, "inputcols", true);
-        ImGui::Text(tr("Action", "操作")); ImGui::NextColumn();
-        ImGui::Text(tr("Bindings", "按键")); ImGui::NextColumn();
-        ImGui::Text(tr("Reset", "重置")); ImGui::NextColumn();
-        ImGui::Separator();
-
         for (int a = 0; a < AID_COUNT; ++a)
         {
+            g_cfg.keyCount[a] = g_defaultKeyCount[a];
+            for (int k = 0; k < g_defaultKeyCount[a]; ++k)
+                g_cfg.keys[a][k] = g_defaultKeys[a][k];
+        }
+        saveConfig();
+    }
+    ImGui::Separator();
+    if (ImGui::BeginTable("kbtbl", 3,
+                          ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg |
+                          ImGuiTableFlags_BordersInnerV, ImVec2(0, 0)))
+    {
+        ImGui::TableSetupColumn(tr("Action", "操作"));
+        ImGui::TableSetupColumn(tr("Bindings", "按键"));
+        ImGui::TableSetupColumn(tr("Reset", "重置"));
+        ImGui::TableHeadersRow();
+        for (int a = 0; a < AID_COUNT; ++a)
+        {
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
             ImGui::Text("%s", actionName(a));
-            ImGui::NextColumn();
-
-            ImGui::BeginGroup();
+            ImGui::TableSetColumnIndex(1);
             for (int k = 0; k < g_cfg.keyCount[a]; ++k)
             {
                 SDL_Scancode sc = g_cfg.keys[a][k];
                 const char* name = (sc >= 0 && sc < SDL_NUM_SCANCODES && g_scancodeNames[sc]) ? g_scancodeNames[sc] : "?";
-                std::string label;
-                if (g_rebindAction == a && g_rebindSlot == k)
-                    label = tr("Press key...", "请按键...");
-                else
-                    label = name;
-                char btn[96];
-                snprintf(btn, sizeof(btn), "%s##k%d_%d", label.c_str(), a, k);
-                if (ImGui::Button(btn, ImVec2(150, 0)))
+                std::string label = (g_rebindAction == a && g_rebindSlot == k)
+                    ? tr("Press key...", "请按键...") : name;
+                std::string id = label + "##k" + std::to_string(a) + "_" + std::to_string(k);
+                if (ImGui::Button(id.c_str(), ImVec2(120, 0)))
                 {
                     g_rebindAction = a;
                     g_rebindSlot = k;
                 }
                 ImGui::SameLine();
-                char del[64];
-                snprintf(del, sizeof(del), "x##k%d_%d", a, k);
-                if (ImGui::SmallButton(del))
+                std::string del = "x##k" + std::to_string(a) + "_" + std::to_string(k);
+                if (ImGui::SmallButton(del.c_str()))
                 {
                     g_cfg.removeKey(a, k);
                     if (g_rebindAction == a) { g_rebindAction = -1; g_rebindSlot = -1; }
@@ -1152,94 +1460,247 @@ static void drawInputSettings()
             }
             if (g_cfg.keyCount[a] < MAX_KEYS_PER_ACTION)
             {
-                char add[64];
-                snprintf(add, sizeof(add), "+ %s##add%d", tr("Add", "添加"), a);
-                if (ImGui::SmallButton(add))
+                std::string add = "+ " + std::string(tr("Add", "添加")) + "##add" + std::to_string(a);
+                if (ImGui::SmallButton(add.c_str()))
                 {
                     g_rebindAction = a;
                     g_rebindSlot = -1;
                 }
             }
-            ImGui::EndGroup();
-            ImGui::NextColumn();
-
-            char rLabel[64];
-            snprintf(rLabel, sizeof(rLabel), "%s##%d", tr("Reset", "重置"), a);
-            if (ImGui::Button(rLabel))
+            ImGui::TableSetColumnIndex(2);
+            std::string r = std::string(tr("Reset", "重置")) + "##r" + std::to_string(a);
+            if (ImGui::Button(r.c_str()))
             {
                 g_cfg.keyCount[a] = g_defaultKeyCount[a];
                 for (int k = 0; k < g_defaultKeyCount[a]; ++k)
                     g_cfg.keys[a][k] = g_defaultKeys[a][k];
+                saveConfig();
             }
-            ImGui::NextColumn();
         }
-        ImGui::Columns(1);
+        ImGui::EndTable();
+    }
+}
 
-        ImGui::Separator();
-        ImGui::Text(tr("Gamepads", "手柄"));
-        if (g_controllers.empty())
-        {
-            ImGui::TextDisabled(tr("No gamepad detected. Plug in a USB / Xbox / DirectInput pad - standard pads auto-map. For a custom pad, put a 'gamecontrollerdb.txt' next to MesenMD.exe.", "未检测到手柄。请插入 USB / Xbox / DirectInput 手柄——标准手柄会自动映射。如需自定义手柄，请将 'gamecontrollerdb.txt' 放在 MesenMD.exe 旁边。"));
-        }
-        for (size_t i = 0; i < g_controllers.size(); ++i)
-        {
-            const char* name = SDL_GameControllerName(g_controllers[i]);
-            ImGui::Text("%s", name ? name : tr("Gamepad", "手柄"));
-            ImGui::SameLine();
-            int p = g_controllerPlayer[i];
-            ImGui::PushID((int)i);
-            ImGui::SetNextItemWidth(150);
-            if (ImGui::Combo(tr("Player", "玩家"), &p, comboPlayer()))
-                g_controllerPlayer[i] = p;
-            ImGui::PopID();
-        }
+static void drawGamepadTab()
+{
+    if (g_pads.empty())
+    {
+        ImGui::TextDisabled(tr("No gamepad detected. Plug in a USB / Xbox / DirectInput pad - standard pads auto-map. For a custom pad, put a 'gamecontrollerdb.txt' next to MesenMD.exe.", "未检测到手柄。请插入 USB / Xbox / DirectInput 手柄——标准手柄会自动映射。如需自定义手柄，请将 'gamecontrollerdb.txt' 放在 MesenMD.exe 旁边。"));
+        return;
+    }
+    static int sel = 0;
+    if (sel < 0) sel = 0;
+    if (sel >= (int)g_pads.size()) sel = (int)g_pads.size() - 1;
 
-        ImGui::Separator();
-        ImGui::Text(tr("Gamepad Hotkeys", "手柄快捷键"));
-        ImGui::TextWrapped(tr("Hold modifier + press button. Esc cancels rebinding.",
-            "按住修饰键再按按钮。Esc 取消重绑。"));
-        ImGui::Columns(4, "hotkeycols", true);
-        ImGui::Text(tr("Action", "操作")); ImGui::NextColumn();
-        ImGui::Text(tr("Modifier", "修饰键")); ImGui::NextColumn();
-        ImGui::Text(tr("Button", "按钮")); ImGui::NextColumn();
-        ImGui::Text(tr("Rebind", "重新绑定")); ImGui::NextColumn();
-        ImGui::Separator();
-        for (int h = 0; h < HK_COUNT; ++h)
+    if (g_pads.size() > 1)
+        if (ImGui::BeginCombo(tr("Device", "设备"), g_pads[sel].name.c_str()))
         {
-            ImGui::Checkbox(("##en"+std::to_string(h)).c_str(), &g_cfg.hotkeyEnabled[h]);
-            ImGui::SameLine();
-            ImGui::Text("%s", hotkeyName(h));
-            ImGui::NextColumn();
+            for (int i = 0; i < (int)g_pads.size(); ++i)
+                if (ImGui::Selectable(g_pads[i].name.c_str(), i == sel))
+                    sel = i;
+            ImGui::EndCombo();
+        }
+    Pad& pad = g_pads[sel];
+
+    ImGui::Text("%s", pad.name.c_str());
+    ImGui::SameLine();
+    int p = pad.player;
+    ImGui::SetNextItemWidth(150);
+    if (ImGui::Combo(tr("Player", "玩家"), &p, comboPlayer()))
+    {
+        pad.player = p;
+        saveConfig();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button(tr("Reset Pad", "重置手柄")))
+    {
+        resetPadMappingToDefault(pad);
+        g_cfg.padMaps[pad.guid] = pad.map;
+        saveConfig();
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled(tr("Click a binding, then press a pad button / stick / D-pad.", "点击绑定项后按手柄按钮 / 摇杆 / 方向键。"));
+    ImGui::Separator();
+
+    int live = firstActivePadInput(pad);
+    if (live >= 0)
+        ImGui::Text(tr("Active input: %s", "当前输入: %s"), padInputName(pad, live).c_str());
+    else
+        ImGui::TextDisabled(tr("Active input: (none) - press a button, stick or D-pad", "当前输入: (无) - 按按钮 / 摇杆 / 方向键"));
+    ImGui::Separator();
+
+    if (ImGui::CollapsingHeader(tr("Input diagnostics", "输入检测")))
+    {
+        bool any = false;
+        for (int b = 0; b < pad.buttonCount; ++b)
+            if (padInputActive(pad, padInput(PAD_BUTTON, b)))
+            { any = true; ImGui::Text("%s %d", tr("Button", "按钮"), b); }
+        for (int ax = 0; ax < pad.axisCount; ++ax)
+        {
+            int v = pad.gc
+                ? (ax < (int)SDL_CONTROLLER_AXIS_MAX ? SDL_GameControllerGetAxis(pad.gc, (SDL_GameControllerAxis)ax) : 0)
+                : SDL_JoystickGetAxis(pad.joy, ax);
+            if (v < -20000 || v > 20000)
+            { any = true; ImGui::Text("%s %d (%d)", tr("Axis", "轴"), ax, v); }
+        }
+        for (int h = 0; h < pad.hatCount; ++h)
+        {
+            Uint8 hat = SDL_JoystickGetHat(pad.joy, h);
+            if (hat)
+            { any = true; ImGui::Text("%s %d = %02x", tr("Hat", "方向键"), h, (unsigned)hat); }
+        }
+        if (!any)
+            ImGui::TextDisabled(tr("Press any control to identify it.", "按下任意按键以识别。"));
+    }
+    ImGui::Separator();
+
+    if (ImGui::BeginTable("padtbl", 3,
+                          ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg |
+                          ImGuiTableFlags_BordersInnerV, ImVec2(0, 0)))
+    {
+        ImGui::TableSetupColumn(tr("Action", "操作"));
+        ImGui::TableSetupColumn(tr("Bindings", "按键"));
+        ImGui::TableSetupColumn(tr("Clear", "清除"));
+        ImGui::TableHeadersRow();
+        for (int a = 0; a < AID_COUNT; ++a)
+        {
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::Text("%s", actionName(a));
+            ImGui::TableSetColumnIndex(1);
+            bool removed = false;
+            for (int k = 0; k < pad.map.mapCount[a]; ++k)
             {
-                const char* mname = (g_cfg.hotkeyMod[h] == SDL_CONTROLLER_BUTTON_INVALID)
-                    ? tr("None", "无") : buttonName(g_cfg.hotkeyMod[h]);
-                ImGui::Text("%s", mname);
-            }
-            ImGui::NextColumn();
-            ImGui::Text("%s", buttonName(g_cfg.hotkeyButton[h]));
-            ImGui::NextColumn();
-            {
-                char label[64];
-                snprintf(label, sizeof(label), "%s##hk%d",
-                         (g_rebindHotkey == h) ? tr("Press combo...", "请按组合键...") : tr("Rebind", "重新绑定"), h);
-                if (ImGui::Button(label, ImVec2(120, 0)))
+                std::string name;
+                if (g_rebindPadAction == a && g_rebindPad == sel && g_rebindPadSlot == k)
                 {
-                    g_rebindHotkey = h;
-                    g_rebindPendingMod = SDL_CONTROLLER_BUTTON_INVALID;
+                    int act = firstActivePadInput(pad);
+                    name = (act >= 0) ? padInputName(pad, act) : tr("Press btn...", "请按按钮...");
+                }
+                else
+                {
+                    name = padInputName(pad, pad.map.map[a][k]);
+                }
+                std::string id = name + "##pd" + std::to_string(a) + "_" + std::to_string(k);
+                if (ImGui::Button(id.c_str(), ImVec2(110, 0)))
+                {
+                    g_rebindPad = sel;
+                    g_rebindPadAction = a;
+                    g_rebindPadSlot = k;
+                    g_padRebindReady = false;
+                }
+                ImGui::SameLine();
+                std::string del = "x##pd" + std::to_string(a) + "_" + std::to_string(k);
+                if (ImGui::SmallButton(del.c_str()))
+                {
+                    for (int m = k; m + 1 < pad.map.mapCount[a]; ++m)
+                        pad.map.map[a][m] = pad.map.map[a][m + 1];
+                    pad.map.mapCount[a]--;
+                    if (g_rebindPadAction == a && g_rebindPadSlot == k)
+                    { g_rebindPad = -1; g_rebindPadAction = -1; g_rebindPadSlot = -1; g_padRebindReady = false; }
+                    g_cfg.padMaps[pad.guid] = pad.map;
+                    saveConfig();
+                    removed = true;
+                    break;
                 }
             }
-            ImGui::NextColumn();
-        }
-        ImGui::Columns(1);
-        if (ImGui::Button(tr("Reset Hotkeys", "重置快捷键")))
-        {
-            for (int h = 0; h < HK_COUNT; ++h)
+            if (!removed && pad.map.mapCount[a] < MAX_PAD_BINDINGS_PER_ACTION)
             {
-                g_cfg.hotkeyEnabled[h] = true;
-                g_cfg.hotkeyMod[h] = g_defaultHotkeyMod[h];
-                g_cfg.hotkeyButton[h] = g_defaultHotkeyButton[h];
+                std::string add = "+ " + std::string(tr("Add", "添加")) + "##padd" + std::to_string(a);
+                if (ImGui::SmallButton(add.c_str()))
+                {
+                    g_rebindPad = sel;
+                    g_rebindPadAction = a;
+                    g_rebindPadSlot = -1;
+                    g_padRebindReady = false;
+                }
             }
-            saveConfig();
+            ImGui::TableSetColumnIndex(2);
+            std::string clr = std::string(tr("Clear", "清除")) + "##pclr" + std::to_string(a);
+            if (ImGui::Button(clr.c_str()))
+            {
+                pad.map.mapCount[a] = 0;
+                g_cfg.padMaps[pad.guid] = pad.map;
+                saveConfig();
+            }
+        }
+        ImGui::EndTable();
+    }
+}
+
+static void drawHotkeysTab()
+{
+    ImGui::TextWrapped(tr("Hold modifier + press button. Esc cancels rebinding.", "按住修饰键再按按钮。Esc 取消重绑。"));
+    if (ImGui::Button(tr("Reset Hotkeys", "重置快捷键")))
+    {
+        for (int h = 0; h < HK_COUNT; ++h)
+        {
+            g_cfg.hotkeyEnabled[h] = true;
+            g_cfg.hotkeyMod[h] = g_defaultHotkeyMod[h];
+            g_cfg.hotkeyButton[h] = g_defaultHotkeyButton[h];
+        }
+        saveConfig();
+    }
+    ImGui::Separator();
+    if (ImGui::BeginTable("hktbl", 4,
+                          ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg |
+                          ImGuiTableFlags_BordersInnerV, ImVec2(0, 0)))
+    {
+        ImGui::TableSetupColumn(tr("Action", "操作"));
+        ImGui::TableSetupColumn(tr("Modifier", "修饰键"));
+        ImGui::TableSetupColumn(tr("Button", "按钮"));
+        ImGui::TableSetupColumn(tr("Rebind", "重新绑定"));
+        ImGui::TableHeadersRow();
+        for (int h = 0; h < HK_COUNT; ++h)
+        {
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::Checkbox(("##en" + std::to_string(h)).c_str(), &g_cfg.hotkeyEnabled[h]);
+            ImGui::SameLine();
+            ImGui::Text("%s", hotkeyName(h));
+            ImGui::TableSetColumnIndex(1);
+            const char* mname = (g_cfg.hotkeyMod[h] == SDL_CONTROLLER_BUTTON_INVALID)
+                ? tr("None", "无") : buttonName(g_cfg.hotkeyMod[h]);
+            ImGui::Text("%s", mname);
+            ImGui::TableSetColumnIndex(2);
+            ImGui::Text("%s", buttonName(g_cfg.hotkeyButton[h]));
+            ImGui::TableSetColumnIndex(3);
+            std::string label = (g_rebindHotkey == h)
+                ? tr("Press combo...", "请按组合键...") : tr("Rebind", "重新绑定");
+            if (ImGui::Button((label + "##hk" + std::to_string(h)).c_str(), ImVec2(120, 0)))
+            {
+                g_rebindHotkey = h;
+                g_rebindPendingMod = SDL_CONTROLLER_BUTTON_INVALID;
+            }
+        }
+        ImGui::EndTable();
+    }
+}
+
+static void drawInputSettings()
+{
+    if (!g_showInput) return;
+    ImGui::SetNextWindowSize(ImVec2(880, 560), ImGuiCond_FirstUseEver);
+    if (ImGui::Begin(tr("Input", "输入"), &g_showInput))
+    {
+        if (ImGui::BeginTabBar("inputtabs"))
+        {
+            if (ImGui::BeginTabItem(tr("Keyboard", "键盘")))
+            {
+                drawKeyboardTab();
+                ImGui::EndTabItem();
+            }
+            if (ImGui::BeginTabItem(tr("Gamepads", "手柄")))
+            {
+                drawGamepadTab();
+                ImGui::EndTabItem();
+            }
+            if (ImGui::BeginTabItem(tr("Hotkeys", "快捷键")))
+            {
+                drawHotkeysTab();
+                ImGui::EndTabItem();
+            }
+            ImGui::EndTabBar();
         }
         ImGui::End();
     }
@@ -1624,13 +2085,13 @@ static void handleEvent(const SDL_Event& e)
             SDL_free(e.drop.file);
         }
     }
-    else if (e.type == SDL_CONTROLLERDEVICEADDED)
+    else if (e.type == SDL_CONTROLLERDEVICEADDED || e.type == SDL_JOYDEVICEADDED)
     {
-        openController(e.cdevice.which);
+        openPad((e.type == SDL_CONTROLLERDEVICEADDED) ? e.cdevice.which : e.jdevice.which);
     }
-    else if (e.type == SDL_CONTROLLERDEVICEREMOVED)
+    else if (e.type == SDL_CONTROLLERDEVICEREMOVED || e.type == SDL_JOYDEVICEREMOVED)
     {
-        closeController(e.cdevice.which);
+        closePad((e.type == SDL_CONTROLLERDEVICEREMOVED) ? e.cdevice.which : e.jdevice.which);
     }
     else if (e.type == SDL_CONTROLLERBUTTONDOWN)
     {
@@ -1647,17 +2108,25 @@ static void handleEvent(const SDL_Event& e)
         }
         else if (g_rebindAction >= 0)
         {
-            int slot = g_rebindSlot;
-            if (slot < 0 || slot >= g_cfg.keyCount[g_rebindAction])
-                slot = g_cfg.keyCount[g_rebindAction];
-            if (slot < MAX_KEYS_PER_ACTION)
+            if (e.key.keysym.scancode == SDL_SCANCODE_ESCAPE)
             {
-                g_cfg.keys[g_rebindAction][slot] = e.key.keysym.scancode;
-                if (slot >= g_cfg.keyCount[g_rebindAction])
-                    g_cfg.keyCount[g_rebindAction] = slot + 1;
+                g_rebindAction = -1;
+                g_rebindSlot = -1;
             }
-            g_rebindAction = -1;
-            g_rebindSlot = -1;
+            else
+            {
+                int slot = g_rebindSlot;
+                if (slot < 0 || slot >= g_cfg.keyCount[g_rebindAction])
+                    slot = g_cfg.keyCount[g_rebindAction];
+                if (slot < MAX_KEYS_PER_ACTION)
+                {
+                    g_cfg.keys[g_rebindAction][slot] = e.key.keysym.scancode;
+                    if (slot >= g_cfg.keyCount[g_rebindAction])
+                        g_cfg.keyCount[g_rebindAction] = slot + 1;
+                }
+                g_rebindAction = -1;
+                g_rebindSlot = -1;
+            }
         }
         else
         {
@@ -1665,7 +2134,14 @@ static void handleEvent(const SDL_Event& e)
             Uint16 mod = e.key.keysym.mod;
 
             // ESC: close an open dialog first, otherwise exit the game (auto-saves).
-            if (sc == SDL_SCANCODE_ESCAPE)
+            if (sc == SDL_SCANCODE_ESCAPE && g_rebindPadAction >= 0)
+            {
+                g_rebindPad = -1;
+                g_rebindPadAction = -1;
+                g_rebindPadSlot = -1;
+                g_padRebindReady = false;
+            }
+            else if (sc == SDL_SCANCODE_ESCAPE)
             {
                 if (g_showInput) g_showInput = false;
                 else if (g_showVideo) g_showVideo = false;
@@ -1735,6 +2211,7 @@ int main(int argc, char** argv)
 
     SDL_EventState(SDL_DROPFILE, SDL_ENABLE);
     SDL_GameControllerEventState(SDL_ENABLE);
+    SDL_JoystickEventState(SDL_ENABLE);
     {
         std::string db = appDir() + "\\gamecontrollerdb.txt";
         if (FILE* h = fopen(db.c_str(), "r")) { fclose(h); SDL_GameControllerAddMappingsFromFile(db.c_str()); }
@@ -1827,7 +2304,7 @@ int main(int argc, char** argv)
     if (wargv)
         LocalFree(wargv);
 
-    enumerateControllers();
+    enumeratePads();
 
     g_running = true;
     Uint64 perfFreq = SDL_GetPerformanceFrequency();
@@ -1847,6 +2324,7 @@ int main(int argc, char** argv)
         while (SDL_PollEvent(&e))
             handleEvent(e);
         updateInput();
+        pollPadRebind();
         if (g_emu.gameLoaded())
             g_emu.runFrame();
 
@@ -1888,15 +2366,17 @@ int main(int argc, char** argv)
         drawInputSettings();
         drawAbout();
 
-        if (g_rebindAction >= 0)
+        if (g_rebindAction >= 0 || g_rebindPadAction >= 0)
         {
-            // Show a hint in the viewport
             ImGui::Begin("##rebind", nullptr,
                          ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
                          ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize);
-            ImGui::SetWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x * 0.5f - 120,
+            ImGui::SetWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x * 0.5f - 150,
                                        ImGui::GetIO().DisplaySize.y * 0.5f - 30));
-            ImGui::Text(tr("Press a key for '%s'...", "请为 '%s' 按键..."), actionName(g_rebindAction));
+            if (g_rebindAction >= 0)
+                ImGui::Text(tr("Press a key for '%s'...", "请为 '%s' 按键..."), actionName(g_rebindAction));
+            else
+                ImGui::Text(tr("Press a button for '%s'... (Esc to cancel)", "请为 '%s' 按手柄按钮... (Esc 取消)"), actionName(g_rebindPadAction));
             ImGui::End();
         }
 
@@ -1944,7 +2424,7 @@ int main(int argc, char** argv)
 
     SDL_GL_DeleteContext(g_glContext);
     SDL_DestroyWindow(g_window);
-    shutdownControllers();
+    shutdownPads();
     SDL_Quit();
 
     saveConfig();

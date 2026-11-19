@@ -2,7 +2,7 @@
 
 一个仿照 **Mesen2** 界面风格的 **Sega Mega Drive / Genesis** 模拟器前端。
 
-**当前版本：v1.0.5**  ·  Windows (MinGW-w64)
+**当前版本：v1.0.6**  ·  Windows (MinGW-w64)
 
 - **核心**：[Genesis Plus GX (libretro)](https://github.com/libretro/Genesis-Plus-GX) —— RetroArch 的官方 MD 核心，精度高，支持 MD / Sega CD / Master System / Game Gear。
 - **前端界面**：SDL2 + OpenGL 3 + Dear ImGui，深色主题，行为与外观尽量贴近 Mesen2。
@@ -204,10 +204,17 @@ MesenMD.exe "C:\path\to\game.md"
 
 ## Input
 
-- Keyboard bindings support multiple keys per action (e.g. Arrows and WASD can both move). Open Config -> Input... to add/remove/rebind keys.
-- Gamepads are auto-detected and auto-mapped via SDL's built-in SDL_GameController database, so XInput and DirectInput pads work out of the box.
-- Controllers are hot-plugged: plugging/unplugging is handled live, and each pad can be assigned to Player 1 or Player 2 in the Input window.
-- Keyboard and gamepad input combine, so multiple pads or a pad plus the keyboard can drive the same player at the same time.
-- Optional custom mappings can be added by placing a gamecontrollerdb.txt next to MesenMD.exe.
+The remapping window (`Config -> Input...`) uses three tabs, in the spirit of Mesen2:
+
+- Keyboard: bind several keys per action (arrow keys and WASD can both move); add/remove/rebind by clicking a binding, pressing `Esc` to cancel, `x` to delete, `+ Add` to add another key, and `Reset All` to restore defaults.
+- Gamepads: pick the connected device, assign it to Player 1 / Player 2, and rebind each action. A live **Active input** readout plus an **Input diagnostics** panel show exactly which physical button / stick / D-pad is being pressed, so an unfamiliar DirectInput pad is easy to map.
+- Hotkeys: rebind controller shortcut combos (modifier + button) for save/load state, reset, exit game, quit program, pause and fullscreen.
+
+Gamepad notes:
+
+- XInput and known DirectInput pads auto-map through SDL's built-in `SDL_GameController` database. Unknown / raw DirectInput pads are opened as generic joysticks so they still work, with a sensible default (face buttons `0-5` = A/B/C/X/Y/Z and a button-based D-pad detected when there is no hat or stick).
+- Pads are hot-plugged and each can be assigned to Player 1 or Player 2; per-device mappings are persisted in `mesenmd.cfg` by GUID.
+- Keyboard and all connected pads combine, so multiple pads or a pad plus the keyboard can drive the same player at the same time.
+- Optional custom mappings can be added by placing a `gamecontrollerdb.txt` next to `MesenMD.exe`.
 - Default 6-button gamepad mapping (standard SDL/Xbox layout): `X` = MD A, `A` = MD B, `B` = MD C, `LB` = MD X, `Y` = MD Y, `RB` = MD Z, `Start` = Start, `Back/Guide` = Mode.
 
