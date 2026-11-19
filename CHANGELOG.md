@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.0.11 - 2026-11-19
+
+### 修复
+- 首页支持键盘（方向键 / WASD 选择，Enter / 空格 / 回车 启动，Delete / Backspace 删除）与手柄（D-pad / 左摇杆选择，A / Start 启动，X 删除）直接操作，不再依赖 ImGui 手柄后端标志，DirectInput 裸设备也能导航。
+
 ## v1.0.10 - 2026-11-19
 
 ### 修复

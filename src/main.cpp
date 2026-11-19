@@ -22,7 +22,7 @@
 #include "emulator.h"
 #include "video_filters.h"
 
-#define MESENMD_VERSION "1.0.10"
+#define MESENMD_VERSION "1.0.11"
 #define MESENMD_AUTHOR    "sbabybird"
 #define MESENMD_REPO_URL  "https://github.com/sbabybird/MesenMD"
 
@@ -263,6 +263,7 @@ static int  g_homeIndex = 0;
 static Uint64 g_homeNavRepeatMs = 0;
 static bool   g_homeNavHolding = false;
 static int    g_homeNavHoldDir = 0;
+static std::map<SDL_JoystickID, uint32_t> g_homePadPrev;
 static bool   g_running = true;
 static bool   g_quitSaved = false;
 static Uint64 g_lastThumbMs = 0;
@@ -1887,13 +1888,9 @@ static bool applyHomeStep(int dir, int axis, int cols, int count)
     return false;
 }
 
-static bool homeNavStep(int cols, int count)
+static bool homeNavStep(bool left, bool right, bool up, bool down, int cols, int count)
 {
     if (count <= 0 || cols <= 0) return false;
-    bool left  = ImGui::IsKeyDown(ImGuiKey_GamepadDpadLeft);
-    bool right = ImGui::IsKeyDown(ImGuiKey_GamepadDpadRight);
-    bool up    = ImGui::IsKeyDown(ImGuiKey_GamepadDpadUp);
-    bool down  = ImGui::IsKeyDown(ImGuiKey_GamepadDpadDown);
     if (!(left || right || up || down))
     {
         g_homeNavHolding = false;
@@ -1918,6 +1915,65 @@ static bool homeNavStep(int cols, int count)
     g_homeNavHoldDir = holdDir;
     g_homeNavRepeatMs = now + 400;
     return applyHomeStep(dir, axis, cols, count);
+}
+
+static void padMenuDirection(const Pad& pad, bool& left, bool& right, bool& up, bool& down)
+{
+    for (int k = 0; k < pad.map.mapCount[AID_LEFT]; ++k)
+        if (padInputActive(pad, pad.map.map[AID_LEFT][k])) { left = true; break; }
+    for (int k = 0; k < pad.map.mapCount[AID_RIGHT]; ++k)
+        if (padInputActive(pad, pad.map.map[AID_RIGHT][k])) { right = true; break; }
+    for (int k = 0; k < pad.map.mapCount[AID_UP]; ++k)
+        if (padInputActive(pad, pad.map.map[AID_UP][k])) { up = true; break; }
+    for (int k = 0; k < pad.map.mapCount[AID_DOWN]; ++k)
+        if (padInputActive(pad, pad.map.map[AID_DOWN][k])) { down = true; break; }
+
+    if (pad.gc)
+    {
+        Sint16 lx = SDL_GameControllerGetAxis(pad.gc, SDL_CONTROLLER_AXIS_LEFTX);
+        Sint16 ly = SDL_GameControllerGetAxis(pad.gc, SDL_CONTROLLER_AXIS_LEFTY);
+        if (lx < -20000) left = true;
+        if (lx >  20000) right = true;
+        if (ly < -20000) up = true;
+        if (ly >  20000) down = true;
+    }
+    else
+    {
+        for (int ax = 0; ax < pad.axisCount; ++ax)
+        {
+            Sint16 v = SDL_JoystickGetAxis(pad.joy, ax);
+            if (ax == 0)
+            {
+                if (v < -20000) left = true;
+                if (v >  20000) right = true;
+            }
+            else if (ax == 1)
+            {
+                if (v < -20000) up = true;
+                if (v >  20000) down = true;
+            }
+        }
+    }
+}
+
+// Holds the pad's menu action button. purpose 0 = play (face-down / Start),
+// purpose 1 = delete (face-left).
+static bool padMenuButton(const Pad& pad, int purpose)
+{
+    if (pad.gc)
+    {
+        if (purpose == 0)
+            return SDL_GameControllerGetButton(pad.gc, SDL_CONTROLLER_BUTTON_A) != 0 ||
+                   SDL_GameControllerGetButton(pad.gc, SDL_CONTROLLER_BUTTON_START) != 0;
+        if (purpose == 1)
+            return SDL_GameControllerGetButton(pad.gc, SDL_CONTROLLER_BUTTON_X) != 0;
+        return false;
+    }
+    if (purpose == 0 && pad.buttonCount >= 1)
+        return SDL_JoystickGetButton(pad.joy, 0) != 0;
+    if (purpose == 1 && pad.buttonCount >= 4)
+        return SDL_JoystickGetButton(pad.joy, 3) != 0;
+    return false;
 }
 
 static void drawHomePage()
@@ -2004,18 +2060,45 @@ static void drawHomePage()
     if (g_homeIndex >= count) g_homeIndex = count - 1;
     if (g_homeIndex < 0) g_homeIndex = 0;
 
-    bool padNav = (ImGui::GetIO().BackendFlags & ImGuiBackendFlags_HasGamepad) != 0;
     bool overlayOpen = g_showVideo || g_showInput || g_showAbout;
     std::string clicked;
     std::string deleted;
     bool navMoved = false;
-    if (padNav && !overlayOpen)
+    if (!overlayOpen)
     {
-        navMoved = homeNavStep(cols, count);
-        if (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceDown) ||
-            (ImGui::IsKeyPressed(ImGuiKey_GamepadStart) && !ImGui::IsKeyDown(ImGuiKey_GamepadBack)))
+        const Uint8* keys = SDL_GetKeyboardState(nullptr);
+        bool kLeft  = keys[SDL_SCANCODE_LEFT] || keys[SDL_SCANCODE_A];
+        bool kRight = keys[SDL_SCANCODE_RIGHT] || keys[SDL_SCANCODE_D];
+        bool kUp    = keys[SDL_SCANCODE_UP] || keys[SDL_SCANCODE_W];
+        bool kDown  = keys[SDL_SCANCODE_DOWN] || keys[SDL_SCANCODE_S];
+
+        bool pLeft = false, pRight = false, pUp = false, pDown = false;
+        bool playPressed = false, delPressed = false;
+        for (size_t pi = 0; pi < g_pads.size(); ++pi)
+        {
+            const Pad& pad = g_pads[pi];
+            bool l = false, r = false, u = false, d = false;
+            padMenuDirection(pad, l, r, u, d);
+            if (l) pLeft = true;
+            if (r) pRight = true;
+            if (u) pUp = true;
+            if (d) pDown = true;
+
+            bool playHeld = padMenuButton(pad, 0);
+            bool delHeld  = padMenuButton(pad, 1);
+            uint32_t cur  = (playHeld ? 1u : 0u) | (delHeld ? 2u : 0u);
+            uint32_t prev = g_homePadPrev[pad.instanceId];
+            if ((cur & 1u) && !(prev & 1u)) playPressed = true;
+            if ((cur & 2u) && !(prev & 2u)) delPressed = true;
+            g_homePadPrev[pad.instanceId] = cur;
+        }
+
+        navMoved = homeNavStep(kLeft || pLeft, kRight || pRight, kUp || pUp, kDown || pDown, cols, count);
+
+        if (ImGui::IsKeyPressed(ImGuiKey_Enter) || ImGui::IsKeyPressed(ImGuiKey_Space) ||
+            ImGui::IsKeyPressed(ImGuiKey_KeypadEnter) || playPressed)
             clicked = g_cfg.recentGames[g_homeIndex];
-        if (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceLeft))
+        if (ImGui::IsKeyPressed(ImGuiKey_Delete) || ImGui::IsKeyPressed(ImGuiKey_Backspace) || delPressed)
             deleted = g_cfg.recentGames[g_homeIndex];
     }
 
@@ -2090,12 +2173,11 @@ static void drawHomePage()
     }
     ImGui::EndChild();
 
-    if (padNav && !overlayOpen)
+    if (!overlayOpen)
     {
-        ImGui::TextDisabled(tr("D-pad: Select    A: Play    X: Delete",
-            "方向键：选择。A：开始。X：删除。"));
+        ImGui::TextDisabled(tr("Arrows/WASD or D-Pad: Select    Enter/A: Play    Del/X: Delete",
+            "方向键/WASD 或十字键：选择    Enter/A：开始    Del/X：删除"));
     }
-
     if (!deleted.empty())
         deleteRecentSnapshot(deleted);
     if (!clicked.empty())
