@@ -22,7 +22,7 @@
 #include "emulator.h"
 #include "video_filters.h"
 
-#define MESENMD_VERSION "1.0.11"
+#define MESENMD_VERSION "1.0.12"
 #define MESENMD_AUTHOR    "sbabybird"
 #define MESENMD_REPO_URL  "https://github.com/sbabybird/MesenMD"
 
@@ -263,7 +263,8 @@ static int  g_homeIndex = 0;
 static Uint64 g_homeNavRepeatMs = 0;
 static bool   g_homeNavHolding = false;
 static int    g_homeNavHoldDir = 0;
-static std::map<SDL_JoystickID, uint32_t> g_homePadPrev;
+static bool   g_homePrevConfirm = false;
+static bool   g_homePrevDelete  = false;
 static bool   g_running = true;
 static bool   g_quitSaved = false;
 static Uint64 g_lastThumbMs = 0;
@@ -1917,62 +1918,17 @@ static bool homeNavStep(bool left, bool right, bool up, bool down, int cols, int
     return applyHomeStep(dir, axis, cols, count);
 }
 
-static void padMenuDirection(const Pad& pad, bool& left, bool& right, bool& up, bool& down)
+static bool mdActionActive(int action)
 {
-    for (int k = 0; k < pad.map.mapCount[AID_LEFT]; ++k)
-        if (padInputActive(pad, pad.map.map[AID_LEFT][k])) { left = true; break; }
-    for (int k = 0; k < pad.map.mapCount[AID_RIGHT]; ++k)
-        if (padInputActive(pad, pad.map.map[AID_RIGHT][k])) { right = true; break; }
-    for (int k = 0; k < pad.map.mapCount[AID_UP]; ++k)
-        if (padInputActive(pad, pad.map.map[AID_UP][k])) { up = true; break; }
-    for (int k = 0; k < pad.map.mapCount[AID_DOWN]; ++k)
-        if (padInputActive(pad, pad.map.map[AID_DOWN][k])) { down = true; break; }
-
-    if (pad.gc)
-    {
-        Sint16 lx = SDL_GameControllerGetAxis(pad.gc, SDL_CONTROLLER_AXIS_LEFTX);
-        Sint16 ly = SDL_GameControllerGetAxis(pad.gc, SDL_CONTROLLER_AXIS_LEFTY);
-        if (lx < -20000) left = true;
-        if (lx >  20000) right = true;
-        if (ly < -20000) up = true;
-        if (ly >  20000) down = true;
-    }
-    else
-    {
-        for (int ax = 0; ax < pad.axisCount; ++ax)
-        {
-            Sint16 v = SDL_JoystickGetAxis(pad.joy, ax);
-            if (ax == 0)
-            {
-                if (v < -20000) left = true;
-                if (v >  20000) right = true;
-            }
-            else if (ax == 1)
-            {
-                if (v < -20000) up = true;
-                if (v >  20000) down = true;
-            }
-        }
-    }
-}
-
-// Holds the pad's menu action button. purpose 0 = play (face-down / Start),
-// purpose 1 = delete (face-left).
-static bool padMenuButton(const Pad& pad, int purpose)
-{
-    if (pad.gc)
-    {
-        if (purpose == 0)
-            return SDL_GameControllerGetButton(pad.gc, SDL_CONTROLLER_BUTTON_A) != 0 ||
-                   SDL_GameControllerGetButton(pad.gc, SDL_CONTROLLER_BUTTON_START) != 0;
-        if (purpose == 1)
-            return SDL_GameControllerGetButton(pad.gc, SDL_CONTROLLER_BUTTON_X) != 0;
-        return false;
-    }
-    if (purpose == 0 && pad.buttonCount >= 1)
-        return SDL_JoystickGetButton(pad.joy, 0) != 0;
-    if (purpose == 1 && pad.buttonCount >= 4)
-        return SDL_JoystickGetButton(pad.joy, 3) != 0;
+    if (action < 0 || action >= AID_COUNT) return false;
+    const Uint8* keys = SDL_GetKeyboardState(nullptr);
+    for (int k = 0; k < g_cfg.keyCount[action]; ++k)
+        if (keys[g_cfg.keys[action][k]])
+            return true;
+    for (const Pad& pad : g_pads)
+        for (int k = 0; k < pad.map.mapCount[action]; ++k)
+            if (padInputActive(pad, pad.map.map[action][k]))
+                return true;
     return false;
 }
 
@@ -2064,41 +2020,27 @@ static void drawHomePage()
     std::string clicked;
     std::string deleted;
     bool navMoved = false;
+
+    // Edge-detect the MD "A" (confirm) / "B" (delete) presses even while an
+    // overlay is open, so a held button cannot trigger a surprise launch.
+    bool confirmHeld = mdActionActive(AID_A);
+    bool deleteHeld  = mdActionActive(AID_B);
+    bool confirmPressed = confirmHeld && !g_homePrevConfirm;
+    bool deletePressed  = deleteHeld  && !g_homePrevDelete;
+    g_homePrevConfirm = confirmHeld;
+    g_homePrevDelete  = deleteHeld;
+
     if (!overlayOpen)
     {
-        const Uint8* keys = SDL_GetKeyboardState(nullptr);
-        bool kLeft  = keys[SDL_SCANCODE_LEFT] || keys[SDL_SCANCODE_A];
-        bool kRight = keys[SDL_SCANCODE_RIGHT] || keys[SDL_SCANCODE_D];
-        bool kUp    = keys[SDL_SCANCODE_UP] || keys[SDL_SCANCODE_W];
-        bool kDown  = keys[SDL_SCANCODE_DOWN] || keys[SDL_SCANCODE_S];
+        bool left  = mdActionActive(AID_LEFT);
+        bool right = mdActionActive(AID_RIGHT);
+        bool up    = mdActionActive(AID_UP);
+        bool down  = mdActionActive(AID_DOWN);
+        navMoved = homeNavStep(left, right, up, down, cols, count);
 
-        bool pLeft = false, pRight = false, pUp = false, pDown = false;
-        bool playPressed = false, delPressed = false;
-        for (size_t pi = 0; pi < g_pads.size(); ++pi)
-        {
-            const Pad& pad = g_pads[pi];
-            bool l = false, r = false, u = false, d = false;
-            padMenuDirection(pad, l, r, u, d);
-            if (l) pLeft = true;
-            if (r) pRight = true;
-            if (u) pUp = true;
-            if (d) pDown = true;
-
-            bool playHeld = padMenuButton(pad, 0);
-            bool delHeld  = padMenuButton(pad, 1);
-            uint32_t cur  = (playHeld ? 1u : 0u) | (delHeld ? 2u : 0u);
-            uint32_t prev = g_homePadPrev[pad.instanceId];
-            if ((cur & 1u) && !(prev & 1u)) playPressed = true;
-            if ((cur & 2u) && !(prev & 2u)) delPressed = true;
-            g_homePadPrev[pad.instanceId] = cur;
-        }
-
-        navMoved = homeNavStep(kLeft || pLeft, kRight || pRight, kUp || pUp, kDown || pDown, cols, count);
-
-        if (ImGui::IsKeyPressed(ImGuiKey_Enter) || ImGui::IsKeyPressed(ImGuiKey_Space) ||
-            ImGui::IsKeyPressed(ImGuiKey_KeypadEnter) || playPressed)
+        if (confirmPressed)
             clicked = g_cfg.recentGames[g_homeIndex];
-        if (ImGui::IsKeyPressed(ImGuiKey_Delete) || ImGui::IsKeyPressed(ImGuiKey_Backspace) || delPressed)
+        if (deletePressed)
             deleted = g_cfg.recentGames[g_homeIndex];
     }
 
@@ -2175,8 +2117,8 @@ static void drawHomePage()
 
     if (!overlayOpen)
     {
-        ImGui::TextDisabled(tr("Arrows/WASD or D-Pad: Select    Enter/A: Play    Del/X: Delete",
-            "方向键/WASD 或十字键：选择    Enter/A：开始    Del/X：删除"));
+        ImGui::TextDisabled(tr("D-Pad / Arrows: Select    A: Play    B: Delete",
+            "方向键/D-Pad：选择    A：开始    B：删除"));
     }
     if (!deleted.empty())
         deleteRecentSnapshot(deleted);
