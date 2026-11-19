@@ -1,8 +1,10 @@
 # MesenMD
 
-一个仿照 **Mesen2** 界面风格的 **Sega Mega Drive / Genesis** 模拟器前端。
+一个行为与外观都尽量贴近 **Mesen2** 的 **Sega Mega Drive / Genesis** 模拟器前端。
 
-**当前版本：v1.0.7**  ·  Windows (MinGW-w64)  ·  作者：[sbabybird](https://github.com/sbabybird)
+> English: [README_EN.md](README_EN.md)
+
+**当前版本：v1.0.8**  ·  Windows (MinGW-w64)  ·  作者：[sbabybird](https://github.com/sbabybird)
 
 - **核心**：[Genesis Plus GX (libretro)](https://github.com/libretro/Genesis-Plus-GX) —— RetroArch 的官方 MD 核心，精度高，支持 MD / Sega CD / Master System / Game Gear。
 - **前端界面**：SDL2 + OpenGL 3 + Dear ImGui，深色主题，行为与外观尽量贴近 Mesen2。
@@ -17,47 +19,39 @@
 
 ### 主页
 
-![Home page（主页，自动缩放并居中的最近游戏截图）](screenshots/home.png)
+![主页（最近游戏截图，自动缩放并居中，带水印与标语）](screenshots/home.png)
 
 ### 游戏画面
 
-![In-game（游戏中画面）](screenshots/game.png)
+![游戏画面（游戏中）](screenshots/game.png)
 
 ### 关于
 
-![About（关于对话框，含作者与仓库信息）](screenshots/about.png)
+![关于（含作者与仓库信息，可一键打开 GitHub）](screenshots/about.png)
 
 ---
 
 ## 特性
 
-- [x] 加载 Mega Drive / Genesis ROM（命令行参数或 `File -> Open ROM...`）
-- [x] 「最近打开」历史记录
+- [x] 加载 Mega Drive / Genesis ROM（命令行参数或 `文件 -> 打开 ROM...`）
+- [x] 「最近打开」历史记录，首页以截图卡片展示
 - [x] 视频缩放：适配窗口 / 原始 / 整数倍（x2–x5）
 - [x] 双线性过滤开关
 - [x] 帧率显示 FPS
 - [x] 音频输出（SDL2 队列驱动，接近实时节奏）
-- [x] 键盘按键重映射（`Config -> Input...`）
-- [x] 手柄支持（SDL_GameController，玩家 1 / 玩家 2）
-- [x] 首页快照支持手柄导航（D-pad 选择、A 开始、X 删除）
-- [x] 手柄快捷键（默认 Select+按钮，可在 `Config -> Input...` 重映射）
+- [x] 键盘按键重映射（`配置 -> 输入...`，每个动作可绑定多个键）
+- [x] 手柄支持（SDL_GameController，玩家 1 / 玩家 2，支持 XInput / DirectInput）
+- [x] 手柄快捷键（可重映射）
 - [x] 暂停 / 复位 / 关闭游戏
 - [x] 支持中文等非 ASCII 路径（UTF-8 处理）
 - [x] 拖放 ROM 文件到窗口即可加载
-- [x] 快捷键：Esc / Ctrl+C / F11 / F1-F10 / Shift+F1-F10
 - [x] 界面多语言：English / 中文
 - [x] 全屏切换（F11）
-
-- [x] Video filters (LCD Grid / CRT / Scanlines) using official RetroArch GLSL shaders
-- [x] Auto-save & auto-load game state on close/open (F1-F10 quick load / Shift+F1-F10 quick save)
-- [x] Home page with play-history snapshots/thumbnails
-- [x] Delete a recent-game snapshot (removes the history entry, its thumbnail and saved states)
-- [x] UI themes: Light / Dark / follow system (auto-adapts to the Windows personalization setting, switchable in `Config -> Video...`)
-- [x] Pause now mutes audio fully (pauses the SDL audio device and clears queued samples)
-- [x] Gamepad navigation on the home page (D-pad select, A play, X delete)
-- [x] Gamepad hotkeys (default Select+button; rebindable in `Config -> Input...`)
-- [x] 首页：去掉「最近游戏」标题与滚动条，截图自动缩放并水平/垂直居中，背景水印「最近游戏」+ 产品标语
+- [x] 视频滤镜：LCD Grid / CRT / Scanlines（官方 RetroArch GLSL shader）
+- [x] 自动保存 / 自动加载游戏状态（关闭 / 打开游戏时）
+- [x] 首页：去掉标题与滚动条，截图自动缩放并居中，背景水印 + 产品标语
 - [x] 关于对话框：作者信息 + 一键打开 GitHub 仓库
+- [x] 界面主题：亮色 / 暗色 / 跟随系统
 
 ---
 
@@ -148,7 +142,7 @@ copy third_party\Genesis-Plus-GX-master\genesis_plus_gx_libretro.dll .
 MesenMD.exe "C:\path\to\game.md"
 ```
 
-也可在界面中 `File -> Open ROM...`（Ctrl+O）选择 `.md / .bin / .gen / .smd / .sg / .68k`。
+也可在界面中 `文件 -> 打开 ROM...`（Ctrl+O）选择 `.md / .bin / .gen / .smd / .sg / .68k`。
 
 ---
 
@@ -182,23 +176,41 @@ MesenMD.exe "C:\path\to\game.md"
 | Ctrl+O | 打开 ROM |
 | Ctrl+W | 关闭游戏 |
 
-界面语言可在 `Config -> Video...` 中切换（English / 中文）。
+---
 
-按键可在 `Config -> Input...` 中重映射，支持每个动作绑定多个按键；键盘与所有已连接手柄同时驱动玩家。手柄遵循标准 SDL 映射（A/B/X/Y、肩键、Start/Back、左摇杆）。
+## 手柄快捷键
 
-手柄快捷键（默认，`Select` 即手柄的 Back / Select 键）：
+**Select** 指手柄的 Back / Select 键。默认组合（可在 `配置 -> 输入...` 的「手柄快捷键」区重映射）：
 
 | 动作 | 默认组合 |
 |------|------|
-| 保存状态 | Select + A |
-| 加载状态 | Select + B |
-| 重置游戏 | Select + X |
-| 退出游戏 | Select + Y |
-| 退出程序 | Select + Start |
-| 暂停 | Select + LB |
-| 全屏 | Select + RB |
+| 保存状态 | Select + 右肩键（RB） |
+| 加载状态 | Select + 左肩键（LB） |
+| 退出游戏 | Select + Start |
+| 重置游戏 | L3 + R3（同时按下左右摇杆） |
+| 退出程序 | Select + Y |
+| 暂停 | Select + A |
+| 全屏 | Select + B |
 
-可在 `Config -> Input...` 的「手柄快捷键」区重映射：点击「重新绑定」后先按住修饰键再按目标按钮，按 `Esc` 取消。
+重映射方法：在「手柄快捷键」区点击「重新绑定」，先按住修饰键再按目标按钮；按 `Esc` 取消。
+
+---
+
+## 输入设置
+
+在 `配置 -> 输入...` 中提供了三个标签页（参考 Mesen2 的交互方式）：
+
+- **键盘**：每个动作可绑定多个按键（方向键与 WASD 可同时用于移动）；点击某个绑定可添加 / 删除 / 重绑，按 `Esc` 取消，点 `x` 删除，`+ 添加` 新增，`全部重置` 恢复默认。
+- **手柄**：选择已连接设备并分配给玩家 1 / 玩家 2，逐个动作重映射。面板提供「当前输入」实时读数与「输入诊断」，能清楚看到正在按下的按钮 / 摇杆 / 方向键编号，方便映射陌生的 DirectInput 手柄。
+- **快捷键**：重映射手柄快捷组合（修饰键 + 按钮），支持保存 / 加载状态、重置、退出游戏、退出程序、暂停与全屏。
+
+手柄说明：
+
+- XInput 与已知的 DirectInput 手柄通过 SDL 自带的 `SDL_GameController` 数据库自动映射。未知 / 裸 DirectInput 摇杆也会被打开为通用摇杆，并给出合理默认（面板按键 `0-5` = A/B/C/X/Y/Z，无方向帽与摇杆时自动检测按键式方向键）。
+- 手柄支持热插拔，每个设备可分配给玩家 1 或 玩家 2；按 GUID 将映射持久化到 `mesenmd.cfg`。
+- 键盘与所有已连接手柄会叠加共同驱动玩家，多个手柄或手柄 + 键盘可同时操作同一玩家。
+- 可自定义映射：将 `gamecontrollerdb.txt` 放到 `MesenMD.exe` 同目录即可。
+- 默认 6 键手柄映射（标准 SDL / Xbox 布局）：`X` = MD A，`A` = MD B，`B` = MD C，`LB` = MD X，`Y` = MD Y，`RB` = MD Z，`Start` = Start，`Back / Guide` = Mode。
 
 ---
 
@@ -206,12 +218,12 @@ MesenMD.exe "C:\path\to\game.md"
 
 - 核心通过 `LoadLibrary` 动态加载 `genesis_plus_gx_libretro.dll`，该 DLL 需与 `MesenMD.exe` 同目录。
 - ROM 路径按 UTF-8 传递，核心会自行打开文件（`need_fullpath`），因此支持中文路径。
-- 若运行 Sega CD / 32X 等需要扩展 BIOS 的游戏，请将对应 BIOS 放到 ROM 所在目录，或稍后可在 `Config` 中增加系统目录设置。
+- 若运行 Sega CD / 32X 等需要扩展 BIOS 的游戏，请将对应 BIOS 放到 ROM 所在目录，或稍后可在 `配置` 中增加系统目录设置。
 - 本项目为个人学习项目，无官方支援；界面细节仍在逐步完善。
 
 ---
 
-## License
+## 许可
 
 - Genesis Plus GX：GPLv3。
 - Dear ImGui：MIT。
@@ -219,22 +231,4 @@ MesenMD.exe "C:\path\to\game.md"
 - 本项目前端代码：随核心以 GPLv3 发布。
 
 请仅使用你合法拥有的游戏 ROM / BIOS。
-
----
-
-## Input
-
-The remapping window (`Config -> Input...`) uses three tabs, in the spirit of Mesen2:
-
-- Keyboard: bind several keys per action (arrow keys and WASD can both move); add/remove/rebind by clicking a binding, pressing `Esc` to cancel, `x` to delete, `+ Add` to add another key, and `Reset All` to restore defaults.
-- Gamepads: pick the connected device, assign it to Player 1 / Player 2, and rebind each action. A live **Active input** readout plus an **Input diagnostics** panel show exactly which physical button / stick / D-pad is being pressed, so an unfamiliar DirectInput pad is easy to map.
-- Hotkeys: rebind controller shortcut combos (modifier + button) for save/load state, reset, exit game, quit program, pause and fullscreen.
-
-Gamepad notes:
-
-- XInput and known DirectInput pads auto-map through SDL's built-in `SDL_GameController` database. Unknown / raw DirectInput pads are opened as generic joysticks so they still work, with a sensible default (face buttons `0-5` = A/B/C/X/Y/Z and a button-based D-pad detected when there is no hat or stick).
-- Pads are hot-plugged and each can be assigned to Player 1 or Player 2; per-device mappings are persisted in `mesenmd.cfg` by GUID.
-- Keyboard and all connected pads combine, so multiple pads or a pad plus the keyboard can drive the same player at the same time.
-- Optional custom mappings can be added by placing a `gamecontrollerdb.txt` next to `MesenMD.exe`.
-- Default 6-button gamepad mapping (standard SDL/Xbox layout): `X` = MD A, `A` = MD B, `B` = MD C, `LB` = MD X, `Y` = MD Y, `RB` = MD Z, `Start` = Start, `Back/Guide` = Mode.
 

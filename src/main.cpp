@@ -22,7 +22,7 @@
 #include "emulator.h"
 #include "video_filters.h"
 
-#define MESENMD_VERSION "1.0.7"
+#define MESENMD_VERSION "1.0.8"
 #define MESENMD_AUTHOR    "sbabybird"
 #define MESENMD_REPO_URL  "https://github.com/sbabybird/MesenMD"
 
@@ -70,23 +70,23 @@ const char* g_hotkeyNamesChinese[HK_COUNT] =
 
 static const SDL_GameControllerButton g_defaultHotkeyMod[HK_COUNT] =
 {
-    SDL_CONTROLLER_BUTTON_BACK,   // Save State
-    SDL_CONTROLLER_BUTTON_BACK,   // Load State
-    SDL_CONTROLLER_BUTTON_BACK,   // Reset
-    SDL_CONTROLLER_BUTTON_BACK,   // Exit Game
-    SDL_CONTROLLER_BUTTON_BACK,   // Quit Program
-    SDL_CONTROLLER_BUTTON_BACK,   // Pause
-    SDL_CONTROLLER_BUTTON_BACK    // Fullscreen
+    SDL_CONTROLLER_BUTTON_BACK,        // Save State  (Select + Right Shoulder)
+    SDL_CONTROLLER_BUTTON_BACK,        // Load State  (Select + Left Shoulder)
+    SDL_CONTROLLER_BUTTON_LEFTSTICK,   // Reset       (L3 + R3)
+    SDL_CONTROLLER_BUTTON_BACK,        // Exit Game   (Select + Start)
+    SDL_CONTROLLER_BUTTON_BACK,        // Quit Program (Select + Y)
+    SDL_CONTROLLER_BUTTON_BACK,        // Pause       (Select + A)
+    SDL_CONTROLLER_BUTTON_BACK         // Fullscreen  (Select + B)
 };
 static const SDL_GameControllerButton g_defaultHotkeyButton[HK_COUNT] =
 {
-    SDL_CONTROLLER_BUTTON_A,            // Save State
-    SDL_CONTROLLER_BUTTON_B,            // Load State
-    SDL_CONTROLLER_BUTTON_X,            // Reset
-    SDL_CONTROLLER_BUTTON_Y,            // Exit Game
-    SDL_CONTROLLER_BUTTON_START,        // Quit Program
-    SDL_CONTROLLER_BUTTON_LEFTSHOULDER, // Pause
-    SDL_CONTROLLER_BUTTON_RIGHTSHOULDER // Fullscreen
+    SDL_CONTROLLER_BUTTON_RIGHTSHOULDER, // Save State  (Select + Right Shoulder)
+    SDL_CONTROLLER_BUTTON_LEFTSHOULDER,  // Load State  (Select + Left Shoulder)
+    SDL_CONTROLLER_BUTTON_RIGHTSTICK,    // Reset       (L3 + R3)
+    SDL_CONTROLLER_BUTTON_START,         // Exit Game   (Select + Start)
+    SDL_CONTROLLER_BUTTON_Y,             // Quit Program (Select + Y)
+    SDL_CONTROLLER_BUTTON_A,             // Pause       (Select + A)
+    SDL_CONTROLLER_BUTTON_B              // Fullscreen  (Select + B)
 };
 
 #define MAX_KEYS_PER_ACTION 8
