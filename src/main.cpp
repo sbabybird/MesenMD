@@ -22,7 +22,9 @@
 #include "emulator.h"
 #include "video_filters.h"
 
-#define MESENMD_VERSION "1.0.6"
+#define MESENMD_VERSION "1.0.7"
+#define MESENMD_AUTHOR    "sbabybird"
+#define MESENMD_REPO_URL  "https://github.com/sbabybird/MesenMD"
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -1709,16 +1711,33 @@ static void drawInputSettings()
 static void drawAbout()
 {
     if (!g_showAbout) return;
-    ImGui::SetNextWindowSize(ImVec2(460, 240), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(480, 280), ImGuiCond_FirstUseEver);
     if (ImGui::Begin(tr("About", "关于"), &g_showAbout))
     {
         ImGui::TextUnformatted("MesenMD");
         ImGui::SameLine();
         ImGui::TextDisabled(MESENMD_VERSION);
         ImGui::Separator();
-        ImGui::TextWrapped(tr("A Mesen2-inspired Sega Mega Drive / Genesis emulator.", "一款灵感来自 Mesen2 的世嘉 Mega Drive / Genesis 模拟器。"));
-        ImGui::TextWrapped(tr("Core: Genesis Plus GX (libretro).  UI: SDL2 + OpenGL + Dear ImGui.", "核心：Genesis Plus GX (libretro)。界面：SDL2 + OpenGL + Dear ImGui。"));
-        ImGui::TextWrapped(tr("GPLv3 license. Intended for legally owned ROMs only.", "GPLv3 许可。仅用于合法拥有的 ROM。"));
+
+        ImGui::TextWrapped(tr("A Mesen2-inspired Sega Mega Drive / Genesis emulator.",
+                              "一款灵感来自 Mesen2 的世嘉 Mega Drive / Genesis 模拟器。"));
+        ImGui::TextWrapped(tr("Core: Genesis Plus GX (libretro).  UI: SDL2 + OpenGL + Dear ImGui.",
+                              "核心：Genesis Plus GX (libretro)。界面：SDL2 + OpenGL + Dear ImGui。"));
+        ImGui::Separator();
+
+        ImGui::TextUnformatted(tr("Author", "作者"));
+        ImGui::SameLine();
+        ImGui::TextDisabled(MESENMD_AUTHOR);
+        ImGui::TextUnformatted(tr("Repository", "项目仓库"));
+        ImGui::SameLine();
+        ImGui::TextDisabled(MESENMD_REPO_URL);
+
+        if (ImGui::Button(tr("Open GitHub", "打开 GitHub")))
+            ShellExecuteA(nullptr, "open", MESENMD_REPO_URL, nullptr, nullptr, SW_SHOWNORMAL);
+
+        ImGui::Separator();
+        ImGui::TextWrapped(tr("GPLv3 license. Intended for legally owned ROMs only.",
+                              "GPLv3 许可。仅用于合法拥有的 ROM。"));
         ImGui::End();
     }
 }
@@ -1883,31 +1902,85 @@ static bool homeNavStep(int cols, int count)
 
 static void drawHomePage()
 {
-    ImGui::Text(tr("Recent Games", "最近游戏"));
-    ImGui::Separator();
-    ImGui::BeginChild("##homeScroll", ImVec2(0, 0), false, ImGuiWindowFlags_AlwaysVerticalScrollbar);
+    ImVec2 avail = ImGui::GetContentRegionAvail();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    ImVec2 wPos = ImGui::GetWindowPos();
+    ImVec2 center = ImVec2(wPos.x + avail.x * 0.5f, wPos.y + avail.y * 0.5f);
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const float fpX = style.FramePadding.x;
+    const float padX = style.WindowPadding.x;
+
+    // Faint background watermark + product tagline (drawn behind the cards).
+    ImFont* font = ImGui::GetFont();
+    const char* wm = tr("Recent Games", "最近游戏");
+    float wmSize = 72.0f;
+    float wmW = font ? font->CalcTextSizeA(wmSize, FLT_MAX, 0.0f, wm).x : 0.0f;
+    ImU32 wmCol = (g_lastAppliedDark == 1) ? IM_COL32(255,255,255,20) : IM_COL32(0,0,0,18);
+    if (dl && font)
+        dl->AddText(font, wmSize, ImVec2(center.x - wmW * 0.5f, center.y - wmSize), wmCol, wm);
+
+    const float topReserve = 30.0f;
+    const char* tagline = tr("A Mesen2-style emulator for Sega Mega Drive / Genesis",
+                             "仿 Mesen2 的世嘉 Mega Drive / Genesis 模拟器");
+    float tagSize = 16.0f;
+    float tagW = font ? font->CalcTextSizeA(tagSize, FLT_MAX, 0.0f, tagline).x : 0.0f;
+    ImU32 tagCol = (g_lastAppliedDark == 1) ? IM_COL32(255,255,255,110) : IM_COL32(0,0,0,110);
+    if (dl && font)
+        dl->AddText(font, tagSize, ImVec2(center.x - tagW * 0.5f, wPos.y + 8.0f), tagCol, tagline);
 
     if (g_cfg.recentGames.empty())
     {
         ImGui::TextDisabled(tr("No recent games.\nOpen a ROM to begin.",
             "无最近游戏。\n请打开一个 ROM 开始。"));
-        ImGui::EndChild();
         return;
     }
 
-    const float cardW = 184, gap = 14, imgH = 120;
-    const ImGuiStyle& style = ImGui::GetStyle();
-    const float fpX = style.FramePadding.x;
-    const float padX = style.WindowPadding.x;
-
-    float avail = ImGui::GetContentRegionAvail().x;
-    int cols = (int)(avail / (cardW + gap));
-    if (cols < 1) cols = 1;
-    float contentW = (float)cols * cardW + (float)(cols - 1) * gap;
-    float startX = (avail - contentW) * 0.5f;
-    if (startX < 0.0f) startX = 0.0f;
-
+    const float gap = 14.0f;
+    const float aspect = 0.652f;
+    const float headerH = 22.0f;
+    const float nameH = 40.0f;
+    const float minCardW = 100.0f;
     int count = (int)g_cfg.recentGames.size();
+
+    float gridAvailX = avail.x;
+    float gridAvailY = avail.y - topReserve;
+    if (gridAvailY < 40.0f) gridAvailY = 40.0f;
+
+    int cols = 1;
+    float cardW = 0.0f;
+    for (int c = 1; c <= count; ++c)
+    {
+        float w = (gridAvailX - (c - 1) * gap) / c;
+        if (w < minCardW) continue;
+        int r = (count + c - 1) / c;
+        float cardH = headerH + w * aspect + nameH;
+        float gridH = r * cardH + (r - 1) * gap;
+        if (gridH <= gridAvailY + 1.0f && w > cardW)
+        {
+            cols = c;
+            cardW = w;
+        }
+    }
+    if (cardW <= 0.0f)
+    {
+        cols = 1;
+        cardW = gridAvailX - 2.0f * gap;
+        float cardH = headerH + cardW * aspect + nameH;
+        if (cardH > gridAvailY)
+            cardW *= (gridAvailY / cardH);
+        if (cardW < minCardW) cardW = minCardW;
+    }
+
+    float imgH = cardW * aspect;
+    float cardH = headerH + imgH + nameH;
+    int rows = (count + cols - 1) / cols;
+    float contentW = cols * cardW + (cols - 1) * gap;
+    float gridH = rows * cardH + (rows - 1) * gap;
+    float startX = (gridAvailX - contentW) * 0.5f;
+    float startY = topReserve + (gridAvailY - gridH) * 0.5f;
+    if (startX < 0.0f) startX = 0.0f;
+    if (startY < 0.0f) startY = 0.0f;
+
     if (g_homeIndex >= count) g_homeIndex = count - 1;
     if (g_homeIndex < 0) g_homeIndex = 0;
 
@@ -1926,13 +1999,21 @@ static void drawHomePage()
             deleted = g_cfg.recentGames[g_homeIndex];
     }
 
+    ImGui::BeginChild("##homeScroll", ImVec2(0, 0), false, ImGuiWindowFlags_NoScrollbar);
+
+    float imgW = cardW - 2.0f * padX - 2.0f * fpX;
+    if (imgW <= 0.0f) imgW = cardW - 2.0f * fpX;
+    float imgX = (cardW - imgW) * 0.5f - fpX;
+    ImVec2 imgSize(imgW, imgH);
+
     int col = 0;
+    float rowY = startY;
     for (size_t i = 0; i < g_cfg.recentGames.size(); ++i)
     {
         const std::string& path = g_cfg.recentGames[i];
         bool selected = (int)i == g_homeIndex;
         if (col == 0)
-            ImGui::SetCursorPosX(startX);
+            ImGui::SetCursorPos(ImVec2(startX, rowY));
         else
             ImGui::SameLine(0, gap);
         col++;
@@ -1941,22 +2022,13 @@ static void drawHomePage()
         size_t pos = name.find_last_of("\\/");
         if (pos != std::string::npos) name = name.substr(pos + 1);
 
-        const float headerH = 22;
         if (selected && navMoved)
             ImGui::SetScrollHereY(0.5f);
         if (selected)
             ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.95f, 0.62f, 0.15f, 1.0f));
-        ImGui::BeginChild(("##card" + std::to_string(i)).c_str(), ImVec2(cardW, headerH + imgH + 40), true,
+        ImGui::BeginChild(("##card" + std::to_string(i)).c_str(), ImVec2(cardW, cardH), true,
                           ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
 
-        float imgW = cardW - 2.0f * padX - 2.0f * fpX;
-        if (imgW <= 0.0f) imgW = cardW - 2.0f * fpX;
-        float imgX = (cardW - imgW) * 0.5f - fpX;
-        GLuint tex = getThumbTexture(thumbPathForPath(path));
-        ImVec2 imgSize(imgW, imgH);
-
-        // Delete button lives in a header strip above the thumbnail so it never
-        // overlaps the image (which would otherwise swallow the click and launch the ROM).
         ImGui::SetCursorPos(ImVec2(cardW - 30, 2));
         ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.85f, 0.2f, 0.2f, 0.7f));
@@ -1965,6 +2037,7 @@ static void drawHomePage()
             deleted = path;
         ImGui::PopStyleColor(3);
 
+        GLuint tex = getThumbTexture(thumbPathForPath(path));
         ImGui::SetCursorPos(ImVec2(imgX, headerH));
         if (tex)
         {
@@ -1989,14 +2062,18 @@ static void drawHomePage()
         if (selected)
             ImGui::PopStyleColor(1);
 
-        if (col >= cols) col = 0;
+        if (col >= cols)
+        {
+            col = 0;
+            rowY += cardH + gap;
+        }
     }
     ImGui::EndChild();
 
     if (padNav && !overlayOpen)
     {
         ImGui::TextDisabled(tr("D-pad: Select    A: Play    X: Delete",
-            "方向键：选择　A：开始　X：删除"));
+            "方向键：选择。A：开始。X：删除。"));
     }
 
     if (!deleted.empty())
@@ -2004,6 +2081,7 @@ static void drawHomePage()
     if (!clicked.empty())
         loadRom(clicked);
 }
+
 
 static void drawViewport()
 {

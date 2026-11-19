@@ -2,13 +2,30 @@
 
 一个仿照 **Mesen2** 界面风格的 **Sega Mega Drive / Genesis** 模拟器前端。
 
-**当前版本：v1.0.6**  ·  Windows (MinGW-w64)
+**当前版本：v1.0.7**  ·  Windows (MinGW-w64)  ·  作者：[sbabybird](https://github.com/sbabybird)
 
 - **核心**：[Genesis Plus GX (libretro)](https://github.com/libretro/Genesis-Plus-GX) —— RetroArch 的官方 MD 核心，精度高，支持 MD / Sega CD / Master System / Game Gear。
 - **前端界面**：SDL2 + OpenGL 3 + Dear ImGui，深色主题，行为与外观尽量贴近 Mesen2。
 - **平台**：Windows（MinGW-w64 编译）。
+- **仓库**：<https://github.com/sbabybird/MesenMD>
 
 > 仅供学习与测试，请使用你合法拥有的 ROM / BIOS 文件。
+
+---
+
+## 截图
+
+### 主页
+
+![Home page（主页，自动缩放并居中的最近游戏截图）](screenshots/home.png)
+
+### 游戏画面
+
+![In-game（游戏中画面）](screenshots/game.png)
+
+### 关于
+
+![About（关于对话框，含作者与仓库信息）](screenshots/about.png)
 
 ---
 
@@ -39,6 +56,9 @@
 - [x] Pause now mutes audio fully (pauses the SDL audio device and clears queued samples)
 - [x] Gamepad navigation on the home page (D-pad select, A play, X delete)
 - [x] Gamepad hotkeys (default Select+button; rebindable in `Config -> Input...`)
+- [x] 首页：去掉「最近游戏」标题与滚动条，截图自动缩放并水平/垂直居中，背景水印「最近游戏」+ 产品标语
+- [x] 关于对话框：作者信息 + 一键打开 GitHub 仓库
+
 ---
 
 ## 目录结构
