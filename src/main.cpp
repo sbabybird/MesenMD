@@ -22,7 +22,7 @@
 #include "emulator.h"
 #include "video_filters.h"
 
-#define MESENMD_VERSION "1.0.8"
+#define MESENMD_VERSION "1.0.9"
 #define MESENMD_AUTHOR    "sbabybird"
 #define MESENMD_REPO_URL  "https://github.com/sbabybird/MesenMD"
 
@@ -149,6 +149,14 @@ static const SDL_Scancode g_defaultKeys[AID_COUNT][MAX_KEYS_PER_ACTION] =
 };
 static const int g_defaultKeyCount[AID_COUNT] = {2,2,2,2,2,2,2,1,1,1,3,3};
 
+// Detect the OS UI language to pick the default UI language (0=English, 1=Chinese).
+// Falls back to English for any non-Chinese system.
+static int detectSystemLanguage()
+{
+    LANGID lang = GetUserDefaultUILanguage();
+    return (PRIMARYLANGID(lang) == LANG_CHINESE) ? 1 : 0;
+}
+
 struct Config
 {
     int videoScale = 0;              // 0 = fit, 1+ = integer scale
@@ -159,7 +167,7 @@ struct Config
     bool autoSaveState = true;    // save/restore game state on close/open
     int  keyboardPlayer = 0;      // joypad slot the keyboard drives (0=P1, 1=P2)
     bool fullscreen = false;      // start the window fullscreen
-    int  language = 0;            // UI language: 0=English, 1=Chinese
+    int  language = detectSystemLanguage(); // UI language: 0=English, 1=Chinese (defaults to system)
     int  theme = 0;               // UI theme: 0=System(auto), 1=Dark, 2=Light
     SDL_Scancode keys[AID_COUNT][MAX_KEYS_PER_ACTION];
     int  keyCount[AID_COUNT];
@@ -1346,6 +1354,15 @@ static void drawMainMenu()
                 ImGui::EndMenu();
             }
 
+            if (ImGui::BeginMenu(tr("Language", "语言")))
+            {
+                int prev = g_cfg.language;
+                if (ImGui::RadioButton("English", g_cfg.language == 0)) g_cfg.language = 0;
+                if (ImGui::RadioButton("中文", g_cfg.language == 1)) g_cfg.language = 1;
+                if (g_cfg.language != prev) saveConfig();
+                ImGui::EndMenu();
+            }
+
             ImGui::EndMenu();
         }
 
@@ -1396,7 +1413,6 @@ static void drawVideoSettings()
         ImGui::Checkbox(tr("Bilinear when no filter", "无滤镜时使用双线性"), &g_cfg.filterBilinear);
         ImGui::Checkbox(tr("Show FPS in status bar", "在状态栏显示帧率"), &g_cfg.showFps);
         ImGui::Checkbox(tr("Enable audio", "启用音频"), &g_cfg.audioEnabled);
-        ImGui::Combo(tr("Language", "语言"), &g_cfg.language, "English\0中文\0");
         int prevTheme = g_cfg.theme;
         ImGui::Combo(tr("Theme", "主题"), &g_cfg.theme, "System\0Dark\0Light\0");
         if (g_cfg.theme != prevTheme)

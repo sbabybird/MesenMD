@@ -4,7 +4,7 @@
 
 > English: [README_EN.md](README_EN.md)
 
-**当前版本：v1.0.8**  ·  Windows (MinGW-w64)  ·  作者：[sbabybird](https://github.com/sbabybird)
+**当前版本：v1.0.9**  ·  Windows (MinGW-w64)  ·  作者：[sbabybird](https://github.com/sbabybird)
 
 - **核心**：[Genesis Plus GX (libretro)](https://github.com/libretro/Genesis-Plus-GX) —— RetroArch 的官方 MD 核心，精度高，支持 MD / Sega CD / Master System / Game Gear。
 - **前端界面**：SDL2 + OpenGL 3 + Dear ImGui，深色主题，行为与外观尽量贴近 Mesen2。
@@ -45,7 +45,7 @@
 - [x] 暂停 / 复位 / 关闭游戏
 - [x] 支持中文等非 ASCII 路径（UTF-8 处理）
 - [x] 拖放 ROM 文件到窗口即可加载
-- [x] 界面多语言：English / 中文
+- [x] 界面多语言：English / 中文（默认跟随系统语言，可在 `配置 -> 语言` 切换）
 - [x] 全屏切换（F11）
 - [x] 视频滤镜：LCD Grid / CRT / Scanlines（官方 RetroArch GLSL shader）
 - [x] 自动保存 / 自动加载游戏状态（关闭 / 打开游戏时）

@@ -4,7 +4,7 @@ A Sega Mega Drive / Genesis emulator front-end whose look and behavior are model
 
 > 中文版：看 [README.md](README.md)
 
-**Current version: v1.0.8**  ·  Windows (MinGW-w64)  ·  Author: [sbabybird](https://github.com/sbabybird)
+**Current version: v1.0.9**  ·  Windows (MinGW-w64)  ·  Author: [sbabybird](https://github.com/sbabybird)
 
 - **Core**: [Genesis Plus GX (libretro)](https://github.com/libretro/Genesis-Plus-GX) — the official MD core used by RetroArch; high accuracy, supports MD / Sega CD / Master System / Game Gear.
 - **Front-end**: SDL2 + OpenGL 3 + Dear ImGui, dark theme, behavior and appearance as close to Mesen2 as possible.
@@ -45,7 +45,7 @@ A Sega Mega Drive / Genesis emulator front-end whose look and behavior are model
 - [x] Pause / Reset / Close game
 - [x] Non-ASCII paths (e.g. Chinese) handled as UTF-8
 - [x] Drag-and-drop a ROM file onto the window to load it
-- [x] UI localization: English / Chinese
+- [x] UI localization: English / Chinese (defaults to the system language; switchable under `Config -> Language`)
 - [x] Fullscreen toggle (F11)
 - [x] Video filters: LCD Grid / CRT / Scanlines (official RetroArch GLSL shaders)
 - [x] Auto-save / auto-load game state on close / open
