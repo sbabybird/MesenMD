@@ -22,7 +22,7 @@
 #include "emulator.h"
 #include "video_filters.h"
 
-#define MESENMD_VERSION "1.0.9"
+#define MESENMD_VERSION "1.0.10"
 #define MESENMD_AUTHOR    "sbabybird"
 #define MESENMD_REPO_URL  "https://github.com/sbabybird/MesenMD"
 
@@ -1389,8 +1389,12 @@ static void drawStatusBar()
     if (g_emu.gameLoaded())
     {
         char buf[256];
-        snprintf(buf, sizeof(buf), "%s  |  %ux%u  |  %.1f fps",
-                 g_emu.coreName().c_str(), g_emu.videoWidth(), g_emu.videoHeight(), g_emu.fps());
+        if (g_cfg.showFps)
+            snprintf(buf, sizeof(buf), "%s  |  %ux%u  |  %.1f fps",
+                     g_emu.coreName().c_str(), g_emu.videoWidth(), g_emu.videoHeight(), g_emu.fps());
+        else
+            snprintf(buf, sizeof(buf), "%s  |  %ux%u",
+                     g_emu.coreName().c_str(), g_emu.videoWidth(), g_emu.videoHeight());
         ImGui::TextUnformatted(buf);
     }
     else
