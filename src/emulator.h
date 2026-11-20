@@ -38,6 +38,8 @@ public:
 
     bool saveState(const std::string& path);
     bool loadState(const std::string& path);
+    bool saveSram(const std::string& path);
+    bool loadSram(const std::string& path);
     size_t saveStateSize();
     const std::string& romPath() const { return romPath_; }
 
@@ -88,6 +90,7 @@ private:
     uint32_t joypadMask_[4] = {0, 0, 0, 0};
     std::string romPath_;
     std::string lastMessage_;
+    std::vector<uint8_t> sramInitial_;
 
     static bool environmentCallback(unsigned cmd, void* data);
     static void videoRefreshCallback(const void* data, unsigned width, unsigned height, size_t pitch);
@@ -98,6 +101,7 @@ private:
     static void logCallback(enum retro_log_level level, const char* fmt, ...);
 
     bool handleEnvironment(unsigned cmd, void* data);
+    void captureSramInitial();
     void handleVideoRefresh(const void* data, unsigned width, unsigned height, size_t pitch);
     void handleAudioSample(int16_t left, int16_t right);
     size_t handleAudioSampleBatch(const int16_t* data, size_t frames);

@@ -15,6 +15,37 @@ static std::wstring utf8ToWide(const std::string& s)
     return w;
 }
 
+static bool writeFileAtomic(const std::string& path, const void* data, size_t size)
+{
+    std::wstring wpath = utf8ToWide(path);
+    if (wpath.empty())
+        return false;
+
+    std::wstring tmp = wpath + L".tmp";
+    HANDLE h = CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                           FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE)
+        return false;
+
+    DWORD written = 0;
+    bool ok = WriteFile(h, data, (DWORD)size, &written, nullptr) != 0 && written == size;
+    if (ok)
+        ok = FlushFileBuffers(h) != 0;
+    CloseHandle(h);
+
+    if (!ok)
+    {
+        DeleteFileW(tmp.c_str());
+        return false;
+    }
+    if (!MoveFileExW(tmp.c_str(), wpath.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+    {
+        DeleteFileW(tmp.c_str());
+        return false;
+    }
+    return true;
+}
+
 Emulator* g_emulator = nullptr;
 
 struct Emulator::CoreApi
@@ -41,6 +72,8 @@ struct Emulator::CoreApi
     void     (*reset)() = nullptr;
     void     (*unload_game)() = nullptr;
     unsigned (*get_region)() = nullptr;
+    void*    (*get_memory_data)(unsigned) = nullptr;
+    size_t   (*get_memory_size)(unsigned) = nullptr;
 };
 
 Emulator::Emulator()
@@ -89,6 +122,8 @@ bool Emulator::loadCore(const std::string& dllPath)
     RESOLVE(reset,                     "retro_reset");
     RESOLVE(unload_game,               "retro_unload_game");
     RESOLVE(get_region,                "retro_get_region");
+    RESOLVE(get_memory_data,           "retro_get_memory_data");
+    RESOLVE(get_memory_size,           "retro_get_memory_size");
     #undef RESOLVE
 
     api->set_environment(&Emulator::environmentCallback);
@@ -158,13 +193,19 @@ bool Emulator::loadGame(const std::string& romPath)
         api_->set_controller_port_device(1, RETRO_DEVICE_JOYPAD);
         gameLoaded_ = true;
         romPath_ = romPath;
+        loadSram(romPath + ".srm");
+        captureSramInitial();
     }
     return ok;
 }
 void Emulator::unloadGame()
 {
     if (coreLoaded_ && api_ && gameLoaded_)
+    {
+        saveSram(romPath_ + ".srm");
+        sramInitial_.clear();
         api_->unload_game();
+    }
     gameLoaded_ = false;
     romPath_.clear();
     videoFrame_.clear();
@@ -200,16 +241,7 @@ bool Emulator::saveState(const std::string& path)
     if (!api_->serialize(buf.data(), buf.size()))
         return false;
 
-    std::wstring wpath = utf8ToWide(path);
-    if (wpath.empty())
-        return false;
-    FILE* f = _wfopen(wpath.c_str(), L"wb");
-    if (!f)
-        return false;
-    size_t n = fwrite(buf.data(), 1, buf.size(), f);
-    bool ok = (n == buf.size()) && (fflush(f) == 0);
-    fclose(f);
-    return ok;
+    return writeFileAtomic(path, buf.data(), buf.size());
 }
 
 bool Emulator::loadState(const std::string& path)
@@ -241,6 +273,66 @@ bool Emulator::loadState(const std::string& path)
     if (rd != buf.size())
         return false;
     return api_->unserialize(buf.data(), buf.size());
+}
+
+bool Emulator::saveSram(const std::string& path)
+{
+    if (!coreLoaded_ || !gameLoaded_ || !api_ || !api_->get_memory_data || !api_->get_memory_size)
+        return false;
+
+    void* data = api_->get_memory_data(RETRO_MEMORY_SAVE_RAM);
+    size_t size = api_->get_memory_size(RETRO_MEMORY_SAVE_RAM);
+    if (!data || size == 0)
+        return false;
+    if (size > 0x10000)
+        size = 0x10000;
+    if (sramInitial_.size() == size && std::memcmp(data, sramInitial_.data(), size) == 0)
+        return false;
+    return writeFileAtomic(path, data, size);
+}
+
+void Emulator::captureSramInitial()
+{
+    sramInitial_.clear();
+    if (!coreLoaded_ || !gameLoaded_ || !api_ || !api_->get_memory_data || !api_->get_memory_size)
+        return;
+
+    void* data = api_->get_memory_data(RETRO_MEMORY_SAVE_RAM);
+    size_t size = api_->get_memory_size(RETRO_MEMORY_SAVE_RAM);
+    if (!data || size == 0)
+        return;
+    if (size > 0x10000)
+        size = 0x10000;
+    sramInitial_.assign(static_cast<uint8_t*>(data), static_cast<uint8_t*>(data) + size);
+}
+
+bool Emulator::loadSram(const std::string& path)
+{
+    if (!coreLoaded_ || !gameLoaded_ || !api_ || !api_->get_memory_data || !api_->get_memory_size)
+        return false;
+
+    void* data = api_->get_memory_data(RETRO_MEMORY_SAVE_RAM);
+    size_t size = api_->get_memory_size(RETRO_MEMORY_SAVE_RAM);
+    if (!data || size == 0)
+        return false;
+    if (size > 0x10000)
+        size = 0x10000;
+
+    std::wstring wpath = utf8ToWide(path);
+    if (wpath.empty())
+        return false;
+    FILE* f = _wfopen(wpath.c_str(), L"rb");
+    if (!f)
+        return false;
+    std::vector<uint8_t> buf(size);
+    size_t rd = fread(buf.data(), 1, buf.size(), f);
+    fclose(f);
+    if (rd == 0)
+        return false;
+    if (rd > size)
+        rd = size;
+    std::memcpy(data, buf.data(), rd);
+    return true;
 }
 
 size_t Emulator::saveStateSize()

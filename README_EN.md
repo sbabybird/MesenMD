@@ -4,7 +4,7 @@ A Sega Mega Drive / Genesis emulator front-end whose look and behavior are model
 
 > 中文版：看 [README.md](README.md)
 
-**Current version: v1.0.16**  ·  Windows (MinGW-w64)  ·  Author: [sbabybird](https://github.com/sbabybird)
+**Current version: v1.0.17**  ·  Windows (MinGW-w64)  ·  Author: [sbabybird](https://github.com/sbabybird)
 
 - **Core**: [Genesis Plus GX (libretro)](https://github.com/libretro/Genesis-Plus-GX) — the official MD core used by RetroArch; high accuracy, supports MD / Sega CD / Master System / Game Gear.
 - **Front-end**: SDL2 + OpenGL 3 + Dear ImGui, dark theme, behavior and appearance as close to Mesen2 as possible.
@@ -48,7 +48,10 @@ A Sega Mega Drive / Genesis emulator front-end whose look and behavior are model
 - [x] UI localization: English / Chinese (defaults to the system language; switchable under `Config -> Language`)
 - [x] Fullscreen toggle (F11)
 - [x] Video filters: LCD Grid / CRT / Scanlines (official RetroArch GLSL shaders)
-- [x] Auto-save / auto-load game state on close / open
+- [x] Auto-save / auto-load game state (toggled separately on close / open; home-page clicks always resume)
+- [x] Auto-save / auto-load SRAM (battery) saves as a `.srm` file on close / open
+- [x] Side mask: uses the bundled black Mega Drive / Genesis console bezel to fill the side bars (Video -> Show side mask)
+- [x] Window position / size memory (re-centers if the window is off-screen)
 - [x] Home page: no title or scrollbar, thumbnails auto-fit and center, faint watermark + product tagline
 - [x] About dialog: author info + Open GitHub button
 - [x] UI themes: Light / Dark / follow system
@@ -69,6 +72,7 @@ mesenmd/
 │   └── Genesis-Plus-GX-master/      # core source (includes prebuilt DLL)
 ├── build.cmd           # one-click front-end build + copy runtime deps
 ├── MesenMD.exe         # build output
+├── mask_md.png         # side-mask overlay (optional; falls back to vector art)
 ├── SDL2.dll            # runtime dependency
 └── genesis_plus_gx_libretro.dll     # core runtime
 ```
@@ -219,6 +223,7 @@ Gamepad notes:
 - The core is loaded dynamically via `LoadLibrary` from `genesis_plus_gx_libretro.dll`, which must be in the same directory as `MesenMD.exe`.
 - ROM paths are passed as UTF-8 and the core opens the file itself (`need_fullpath`), so non-ASCII (e.g. Chinese) paths work.
 - For Sega CD / 32X games that require extra BIOS files, place the relevant BIOS in the ROM directory; a system-directory setting may be added later in `Config`.
+- "Show side mask" uses the bundled black Mega Drive / Genesis bezel `mask_md.png`, which must be in the same directory as `MesenMD.exe`; if missing it falls back to the built-in vector art.
 - This is a personal learning project with no official support; UI details are still evolving.
 
 ---

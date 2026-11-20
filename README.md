@@ -1,10 +1,10 @@
-# MesenMD
+﻿# MesenMD
 
 一个行为与外观都尽量贴近 **Mesen2** 的 **Sega Mega Drive / Genesis** 模拟器前端。
 
 > English: [README_EN.md](README_EN.md)
 
-**当前版本：v1.0.16**  ·  Windows (MinGW-w64)  ·  作者：[sbabybird](https://github.com/sbabybird)
+**当前版本：v1.0.17**  ·  Windows (MinGW-w64)  ·  作者：[sbabybird](https://github.com/sbabybird)
 
 - **核心**：[Genesis Plus GX (libretro)](https://github.com/libretro/Genesis-Plus-GX) —— RetroArch 的官方 MD 核心，精度高，支持 MD / Sega CD / Master System / Game Gear。
 - **前端界面**：SDL2 + OpenGL 3 + Dear ImGui，深色主题，行为与外观尽量贴近 Mesen2。
@@ -48,7 +48,10 @@
 - [x] 界面多语言：English / 中文（默认跟随系统语言，可在 `配置 -> 语言` 切换）
 - [x] 全屏切换（F11）
 - [x] 视频滤镜：LCD Grid / CRT / Scanlines（官方 RetroArch GLSL shader）
-- [x] 自动保存 / 自动加载游戏状态（关闭 / 打开游戏时）
+- [x] 自动保存 / 自动加载游戏状态（关闭 / 打开时可分别开关，首页点击最近游戏始终恢复）
+- [x] 自动保存 / 自动加载 SRAM 电池存档（关闭 / 打开游戏时，写入 `.srm` 文件）
+- [x] 侧边遮罩：使用随程序附带的黑色 Mega Drive / Genesis 主机遮罩填充两侧（视频 -> 显示侧边遮罩）
+- [x] 记忆窗口位置与大小（窗口被移到屏幕外时自动居中）
 - [x] 首页：去掉标题与滚动条，截图自动缩放并居中，背景水印 + 产品标语
 - [x] 关于对话框：作者信息 + 一键打开 GitHub 仓库
 - [x] 界面主题：亮色 / 暗色 / 跟随系统
@@ -69,6 +72,7 @@ mesenmd/
 │   └── Genesis-Plus-GX-master/      # 核心源码（含已编译 DLL）
 ├── build.cmd           # 一键编译前端 + 复制运行时依赖
 ├── MesenMD.exe         # 编译产物
+├── mask_md.png         # 侧边遮罩图（可缺失，缺失时退化为矢量插画）
 ├── SDL2.dll            # 运行时依赖
 └── genesis_plus_gx_libretro.dll     # 核心运行时
 ```
@@ -219,6 +223,7 @@ MesenMD.exe "C:\path\to\game.md"
 - 核心通过 `LoadLibrary` 动态加载 `genesis_plus_gx_libretro.dll`，该 DLL 需与 `MesenMD.exe` 同目录。
 - ROM 路径按 UTF-8 传递，核心会自行打开文件（`need_fullpath`），因此支持中文路径。
 - 若运行 Sega CD / 32X 等需要扩展 BIOS 的游戏，请将对应 BIOS 放到 ROM 所在目录，或稍后可在 `配置` 中增加系统目录设置。
+- 「显示侧边遮罩」使用随程序附带的黑色 Mega Drive / Genesis 主机遮罩 `mask_md.png`，该文件需与 `MesenMD.exe` 同目录；缺失时自动回退为内置矢量插画。
 - 本项目为个人学习项目，无官方支援；界面细节仍在逐步完善。
 
 ---

@@ -15,6 +15,7 @@
 #include <vector>
 #include <map>
 #include <fstream>
+#include <sstream>
 #include <algorithm>
 #include <stb_image.h>
 #include <stb_image_write.h>
@@ -22,7 +23,7 @@
 #include "emulator.h"
 #include "video_filters.h"
 
-#define MESENMD_VERSION "1.0.16"
+#define MESENMD_VERSION "1.0.17"
 #define MESENMD_AUTHOR    "sbabybird"
 #define MESENMD_REPO_URL  "https://github.com/sbabybird/MesenMD"
 
@@ -201,12 +202,21 @@ struct Config
     bool showFps = false;
     bool audioEnabled = true;
     int  videoFilter = 0;          // 0=None 1=Bilinear 2=LCD Grid 3=CRT 4=Scanlines
-    bool autoSaveState = true;    // save/restore game state on close/open
+    bool maskEnabled = false;      // draw a console illustration in the side bars
+    int  maskType = 0;             // 0=MD Model 1, 1=MD Model 2, 2=Genesis
+    bool autoSaveState = true;    // save game state on close
+    bool autoLoadState = false;   // load state on open (off by default)
     int  keyboardPlayer = 0;      // joypad slot the keyboard drives (0=P1, 1=P2)
     bool fullscreen = false;      // start the window fullscreen
     int  aspectRatio = 0;         // video aspect: 0=Auto(core) 1=4:3 2=Original
     int  language = detectSystemLanguage(); // UI language: 0=English, 1=Chinese (defaults to system)
     int  theme = 0;               // UI theme: 0=System(auto), 1=Dark, 2=Light
+    int  windowX = SDL_WINDOWPOS_CENTERED;
+    int  windowY = SDL_WINDOWPOS_CENTERED;
+    int  windowW = 1024;
+    int  windowH = 640;
+    bool windowMaximized = false;
+    bool windowSaved = false;
     SDL_Scancode keys[AID_COUNT][MAX_KEYS_PER_ACTION];
     int  keyCount[AID_COUNT];
     std::vector<std::string> recentGames;
@@ -322,6 +332,8 @@ static GLuint g_tex = 0;
 static int g_texW = 0, g_texH = 0;
 static std::vector<uint8_t> g_rgba;
 
+static GLuint g_maskTex = 0;      // ready-made black MD side-mask overlay texture
+
 static bool g_showVideo   = false;
 static bool g_showInput   = false;
 static bool g_showAbout   = false;
@@ -405,6 +417,7 @@ static const char* comboAspectRatio()
         : "Auto\0" "4:3\0" "Original pixels\0";
 }
 
+
 static const char* comboPlayer()
 {
     return (g_cfg.language == 1)
@@ -426,6 +439,18 @@ static std::string configPath()
     return dir + "\\mesenmd.cfg";
 }
 
+// Resolve a path to an asset that ships next to the executable.
+static std::string assetPath(const char* name)
+{
+    char exe[MAX_PATH] = { 0 };
+    GetModuleFileNameA(nullptr, exe, MAX_PATH);
+    std::string dir = exe;
+    size_t pos = dir.find_last_of("\\/");
+    if (pos != std::string::npos)
+        dir = dir.substr(0, pos);
+    return dir + "\\" + name;
+}
+
 static void populateScancodeNames()
 {
     for (int i = 0; i < SDL_NUM_SCANCODES; ++i)
@@ -435,38 +460,79 @@ static void populateScancodeNames()
     }
 }
 
+static std::wstring utf8ToWide(const std::string& s);
+
+static bool writeFileAtomic(const std::string& path, const void* data, size_t size)
+{
+    std::wstring wpath = utf8ToWide(path);
+    if (wpath.empty())
+        return false;
+
+    std::wstring tmp = wpath + L".tmp";
+    HANDLE h = CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                           FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE)
+        return false;
+
+    DWORD written = 0;
+    bool ok = WriteFile(h, data, (DWORD)size, &written, nullptr) != 0 && written == size;
+    if (ok)
+        ok = FlushFileBuffers(h) != 0;
+    CloseHandle(h);
+
+    if (!ok)
+    {
+        DeleteFileW(tmp.c_str());
+        return false;
+    }
+    if (!MoveFileExW(tmp.c_str(), wpath.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+    {
+        DeleteFileW(tmp.c_str());
+        return false;
+    }
+    return true;
+}
+
 static void saveConfig()
 {
-    std::ofstream f(configPath());
-    if (!f) return;
-    f << "videoScale=" << g_cfg.videoScale << "\n";
-    f << "filterBilinear=" << (g_cfg.filterBilinear ? 1 : 0) << "\n";
-    f << "showFps=" << (g_cfg.showFps ? 1 : 0) << "\n";
-    f << "audioEnabled=" << (g_cfg.audioEnabled ? 1 : 0) << "\n";
-    f << "videoFilter=" << g_cfg.videoFilter << "\n";
-    f << "autoSaveState=" << (g_cfg.autoSaveState ? 1 : 0) << "\n";
+    std::ostringstream ss;
+    ss << "videoScale=" << g_cfg.videoScale << "\n";
+    ss << "filterBilinear=" << (g_cfg.filterBilinear ? 1 : 0) << "\n";
+    ss << "showFps=" << (g_cfg.showFps ? 1 : 0) << "\n";
+    ss << "audioEnabled=" << (g_cfg.audioEnabled ? 1 : 0) << "\n";
+    ss << "videoFilter=" << g_cfg.videoFilter << "\n";
+    ss << "maskEnabled=" << (g_cfg.maskEnabled ? 1 : 0) << "\n";
+    ss << "maskType=" << g_cfg.maskType << "\n";
+    ss << "autoSaveState=" << (g_cfg.autoSaveState ? 1 : 0) << "\n";
+    ss << "autoLoadState=" << (g_cfg.autoLoadState ? 1 : 0) << "\n";
     for (int a = 0; a < AID_COUNT; ++a)
         for (int k = 0; k < g_cfg.keyCount[a]; ++k)
-            f << "key" << a << "_" << k << "=" << (int)g_cfg.keys[a][k] << "\n";
-    f << "keyboardPlayer=" << g_cfg.keyboardPlayer << "\n";
-    f << "fullscreen=" << (g_cfg.fullscreen ? 1 : 0) << "\n";
-    f << "aspectRatio=" << g_cfg.aspectRatio << "\n";
-    f << "language=" << g_cfg.language << "\n";
-    f << "theme=" << g_cfg.theme << "\n";
+            ss << "key" << a << "_" << k << "=" << (int)g_cfg.keys[a][k] << "\n";
+    ss << "keyboardPlayer=" << g_cfg.keyboardPlayer << "\n";
+    ss << "fullscreen=" << (g_cfg.fullscreen ? 1 : 0) << "\n";
+    ss << "aspectRatio=" << g_cfg.aspectRatio << "\n";
+    ss << "language=" << g_cfg.language << "\n";
+    ss << "theme=" << g_cfg.theme << "\n";
+    ss << "windowX=" << g_cfg.windowX << "\n";
+    ss << "windowY=" << g_cfg.windowY << "\n";
+    ss << "windowW=" << g_cfg.windowW << "\n";
+    ss << "windowH=" << g_cfg.windowH << "\n";
+    ss << "windowMaximized=" << (g_cfg.windowMaximized ? 1 : 0) << "\n";
+    ss << "windowSaved=" << (g_cfg.windowSaved ? 1 : 0) << "\n";
     for (size_t i = 0; i < g_cfg.recentGames.size(); ++i)
-        f << "recent=" << g_cfg.recentGames[i] << "\n";
+        ss << "recent=" << g_cfg.recentGames[i] << "\n";
     for (int h = 0; h < HK_COUNT; ++h)
     {
-        f << "hotkeyEnabled" << h << "=" << (g_cfg.hotkeyEnabled[h] ? 1 : 0) << "\n";
-        f << "hotkeyMod" << h << "=" << (int)g_cfg.hotkeyMod[h] << "\n";
-        f << "hotkeyButton" << h << "=" << (int)g_cfg.hotkeyButton[h] << "\n";
+        ss << "hotkeyEnabled" << h << "=" << (g_cfg.hotkeyEnabled[h] ? 1 : 0) << "\n";
+        ss << "hotkeyMod" << h << "=" << (int)g_cfg.hotkeyMod[h] << "\n";
+        ss << "hotkeyButton" << h << "=" << (int)g_cfg.hotkeyButton[h] << "\n";
     }
     for (int h = 0; h < HK_COUNT; ++h)
         for (int k = 0; k < g_cfg.hotkeyKeyCount[h]; ++k)
         {
-            f << "hotkeyKey" << h << "_" << k << "=" << (int)g_cfg.hotkeyKeys[h][k].scancode << "\n";
-            f << "hotkeyKeyMod" << h << "_" << k << "=" << (int)g_cfg.hotkeyKeys[h][k].mod << "\n";
-            f << "hotkeyKeySlot" << h << "_" << k << "=" << (int)g_cfg.hotkeyKeys[h][k].slot << "\n";
+            ss << "hotkeyKey" << h << "_" << k << "=" << (int)g_cfg.hotkeyKeys[h][k].scancode << "\n";
+            ss << "hotkeyKeyMod" << h << "_" << k << "=" << (int)g_cfg.hotkeyKeys[h][k].mod << "\n";
+            ss << "hotkeyKeySlot" << h << "_" << k << "=" << (int)g_cfg.hotkeyKeys[h][k].slot << "\n";
         }
     for (auto& kv : g_cfg.padMaps)
     {
@@ -474,8 +540,10 @@ static void saveConfig()
         const PadMap& pm = kv.second;
         for (int a = 0; a < AID_COUNT; ++a)
             for (int k = 0; k < pm.mapCount[a]; ++k)
-                f << "padmap." << guid << "." << a << "." << k << "=" << pm.map[a][k] << "\n";
+                ss << "padmap." << guid << "." << a << "." << k << "=" << pm.map[a][k] << "\n";
     }
+    std::string text = ss.str();
+    writeFileAtomic(configPath(), text.data(), text.size());
 }
 
 static void loadConfig()
@@ -496,12 +564,21 @@ static void loadConfig()
         else if (key == "showFps")     g_cfg.showFps = std::atoi(val.c_str()) != 0;
         else if (key == "audioEnabled") g_cfg.audioEnabled = std::atoi(val.c_str()) != 0;
         else if (key == "videoFilter") g_cfg.videoFilter = std::atoi(val.c_str());
+        else if (key == "maskEnabled") g_cfg.maskEnabled = std::atoi(val.c_str()) != 0;
+        else if (key == "maskType") g_cfg.maskType = std::atoi(val.c_str());
         else if (key == "autoSaveState") g_cfg.autoSaveState = std::atoi(val.c_str()) != 0;
+        else if (key == "autoLoadState") g_cfg.autoLoadState = std::atoi(val.c_str()) != 0;
         else if (key == "keyboardPlayer") g_cfg.keyboardPlayer = std::atoi(val.c_str());
         else if (key == "fullscreen") g_cfg.fullscreen = std::atoi(val.c_str()) != 0;
         else if (key == "aspectRatio") g_cfg.aspectRatio = std::atoi(val.c_str());
         else if (key == "language") g_cfg.language = std::atoi(val.c_str());
         else if (key == "theme") g_cfg.theme = std::atoi(val.c_str());
+        else if (key == "windowX") { g_cfg.windowX = std::atoi(val.c_str()); g_cfg.windowSaved = true; }
+        else if (key == "windowY") { g_cfg.windowY = std::atoi(val.c_str()); g_cfg.windowSaved = true; }
+        else if (key == "windowW") { g_cfg.windowW = std::atoi(val.c_str()); g_cfg.windowSaved = true; }
+        else if (key == "windowH") { g_cfg.windowH = std::atoi(val.c_str()); g_cfg.windowSaved = true; }
+        else if (key == "windowMaximized") g_cfg.windowMaximized = std::atoi(val.c_str()) != 0;
+        else if (key == "windowSaved") g_cfg.windowSaved = std::atoi(val.c_str()) != 0;
         else if (key.rfind("hotkeyEnabled", 0) == 0)
         {
             int h = -1;
@@ -702,9 +779,11 @@ static void autoSaveState()
         g_emu.setLastMessage("State saved.");
 }
 
-static void autoLoadState()
+static void loadStateForRom(bool force)
 {
-    if (!g_cfg.autoSaveState || !g_emu.gameLoaded())
+    if (!g_emu.gameLoaded())
+        return;
+    if (!force && !g_cfg.autoLoadState)
         return;
     std::string p = statePathForRom();
     if (fileExists(p) && g_emu.loadState(p))
@@ -714,10 +793,17 @@ static void autoLoadState()
 static void stopAudio();  // defined in audio section below
 static void saveThumbnail();  // defined in home-page section below
 
-static void closeGame()
+static void saveSession()
 {
+    if (!g_emu.gameLoaded())
+        return;
     autoSaveState();
     saveThumbnail();
+}
+
+static void closeGame()
+{
+    saveSession();
     g_emu.unloadGame();
     stopAudio();
     if (g_cfg.fullscreen)
@@ -781,8 +867,7 @@ static void doQuitSave()
 {
     if (g_quitSaved) return;
     g_quitSaved = true;
-    autoSaveState();
-    saveThumbnail();
+    saveSession();
 }
 
 static void requestQuit()
@@ -845,13 +930,13 @@ static std::string openRomDialog(SDL_Window* window)
     return "";
 }
 
-static void loadRom(const std::string& path)
+static void loadRom(const std::string& path, bool resumeState = false)
 {
     if (path.empty())
         return;
 
     if (g_emu.gameLoaded())
-        g_emu.unloadGame();
+        saveSession();
     stopAudio();
 
     if (!g_emu.loadGame(path))
@@ -863,7 +948,7 @@ static void loadRom(const std::string& path)
 
     startAudio(g_emu.sampleRate());
     addRecent(path);
-    autoLoadState();
+    loadStateForRom(resumeState);
     SDL_SetWindowTitle(g_window, ("MesenMD - " + path).c_str());
 }
 
@@ -1337,7 +1422,8 @@ static void triggerHotkey(int h, int slot = 1)
             if (inGame) g_emu.reset();
             break;
         case HK_EXIT_GAME:
-            if (inGame) closeGame();
+            if (isFullscreenActive()) toggleFullscreen();
+            else if (inGame) closeGame();
             break;
         case HK_QUIT:
             requestQuit();
@@ -1468,8 +1554,25 @@ static void drawMainMenu()
                     ImGui::TextDisabled(tr("No recent games", "无最近游戏"));
                 for (size_t i = 0; i < g_cfg.recentGames.size(); ++i)
                 {
-                    if (ImGui::MenuItem(g_cfg.recentGames[i].c_str()))
+                    std::string name = g_cfg.recentGames[i];
+                    size_t slash = name.find_last_of("\\/");
+                    if (slash != std::string::npos)
+                        name = name.substr(slash + 1);
+                    ImGui::PushID((int)i);
+                    if (ImGui::MenuItem(name.c_str()))
                         loadRom(g_cfg.recentGames[i]);
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("%s", g_cfg.recentGames[i].c_str());
+                    ImGui::PopID();
+                }
+                if (!g_cfg.recentGames.empty())
+                {
+                    ImGui::Separator();
+                    if (ImGui::MenuItem(tr("Clear Recent", "清空最近")))
+                    {
+                        g_cfg.recentGames.clear();
+                        saveConfig();
+                    }
                 }
                 ImGui::EndMenu();
             }
@@ -1515,7 +1618,10 @@ static void drawMainMenu()
                 ImGui::TextDisabled(tr("No game loaded", "未加载游戏"));
             }
             ImGui::Separator();
-            ImGui::MenuItem(tr("Auto-save state on close", "关闭时自动保存状态"), nullptr, &g_cfg.autoSaveState);
+            if (ImGui::MenuItem(tr("Auto-save state on close", "关闭时自动保存状态"), nullptr, &g_cfg.autoSaveState))
+                saveConfig();
+            if (ImGui::MenuItem(tr("Auto-load state on open", "打开时自动读档"), nullptr, &g_cfg.autoLoadState))
+                saveConfig();
             ImGui::EndMenu();
         }
 
@@ -1590,12 +1696,21 @@ static void drawStatusBar()
 static void drawVideoSettings()
 {
     if (!g_showVideo) return;
-    ImGui::SetNextWindowSize(ImVec2(420, 250), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(420, 320), ImGuiCond_FirstUseEver);
     if (ImGui::Begin(tr("Video", "视频"), &g_showVideo))
     {
         ImGui::Combo(tr("Window scale", "窗口缩放"), &g_cfg.videoScale, comboWindowScale());
         ImGui::Combo(tr("Video filter", "视频滤镜"), &g_cfg.videoFilter, comboVideoFilter());
         ImGui::Combo(tr("Aspect ratio", "宽高比"), &g_cfg.aspectRatio, comboAspectRatio());
+        ImGui::Separator();
+        if (ImGui::Checkbox(tr("Show side mask", "显示侧边遮罩"), &g_cfg.maskEnabled))
+            saveConfig();
+        if (g_cfg.maskEnabled)
+        {
+            ImGui::TextDisabled(tr("Shows a bundled black Mega Drive bezel around the game.",
+                                   "用 MD 主机插画填充两侧黑边。"));
+        }
+        ImGui::Separator();
         ImGui::Checkbox(tr("Bilinear when no filter", "无滤镜时使用双线性"), &g_cfg.filterBilinear);
         ImGui::Checkbox(tr("Show FPS in status bar", "在状态栏显示帧率"), &g_cfg.showFps);
         ImGui::Checkbox(tr("Enable audio", "启用音频"), &g_cfg.audioEnabled);
@@ -2410,9 +2525,184 @@ static void drawHomePage()
     if (!deleted.empty())
         deleteRecentSnapshot(deleted);
     if (!clicked.empty())
-        loadRom(clicked);
+        loadRom(clicked, true);
 }
 
+
+struct MaskColors
+{
+    ImU32 body, top, slot, accent, text, glow, panel;
+};
+
+static MaskColors maskColors(int type)
+{
+    bool dark = (g_lastAppliedDark == 1);
+    ImU32 body  = dark ? IM_COL32(120, 125, 135, 82) : IM_COL32(55, 60, 70, 78);
+    ImU32 top   = dark ? IM_COL32(190, 195, 205, 105) : IM_COL32(100, 105, 115, 92);
+    ImU32 slot  = dark ? IM_COL32(12, 12, 16, 135) : IM_COL32(12, 12, 16, 115);
+    ImU32 text  = dark ? IM_COL32(255, 255, 255, 100) : IM_COL32(0, 0, 0, 100);
+    ImU32 glow  = dark ? IM_COL32(255, 255, 255, 7) : IM_COL32(0, 0, 0, 6);
+    ImU32 panel = dark ? IM_COL32(255, 255, 255, 7) : IM_COL32(0, 0, 0, 6);
+    ImU32 accent;
+    switch (type)
+    {
+        case 1:  accent = IM_COL32(70, 130, 220, 125); break;
+        case 2:  accent = IM_COL32(150, 90, 220, 125); break;
+        default: accent = IM_COL32(210, 70, 70, 125); break;
+    }
+    return { body, top, slot, accent, text, glow, panel };
+}
+
+static void drawMdConsole(ImDrawList* dl, ImVec2 center, float w, int type)
+{
+    MaskColors c = maskColors(type);
+    float h = w * 0.42f;
+    ImVec2 p0(center.x - w * 0.5f, center.y - h * 0.5f);
+    ImVec2 p1(center.x + w * 0.5f, center.y + h * 0.5f);
+    float rounding = h * 0.14f;
+
+    dl->AddCircleFilled(center, w * 0.62f, c.glow, 48);
+    dl->AddRectFilled(p0, p1, c.body, rounding);
+
+    ImVec2 t0(p0.x + w * 0.04f, p0.y + h * 0.05f);
+    ImVec2 t1(p1.x - w * 0.04f, p0.y + h * 0.24f);
+    dl->AddRectFilled(t0, t1, c.top, rounding * 0.7f);
+
+    float slotW = w * 0.34f;
+    float slotH = h * 0.16f;
+    ImVec2 s0(center.x - slotW * 0.5f, p0.y + h * 0.08f);
+    ImVec2 s1(center.x + slotW * 0.5f, s0.y + slotH);
+    dl->AddRectFilled(s0, s1, c.slot, 3.0f);
+
+    ImVec2 c0(center.x - slotW * 0.42f, p0.y - h * 0.16f);
+    ImVec2 c1(center.x + slotW * 0.42f, p0.y + h * 0.05f);
+    dl->AddRectFilled(c0, c1, c.accent, 2.0f);
+
+    ImVec2 a0(p0.x + w * 0.06f, p1.y - h * 0.22f);
+    ImVec2 a1(p1.x - w * 0.06f, p1.y - h * 0.14f);
+    dl->AddRectFilled(a0, a1, c.accent, 2.0f);
+
+    float r = h * 0.09f;
+    ImVec2 pc(p1.x - w * 0.10f, p0.y + h * 0.55f);
+    dl->AddCircle(pc, r, c.top, 16, 2.0f);
+
+    ImFont* font = ImGui::GetFont();
+    if (font)
+    {
+        const char* label = (type == 2) ? "GENESIS" : (type == 1 ? "MD 2" : "16-BIT");
+        float fs = h * 0.16f;
+        ImVec2 ts = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, label);
+        dl->AddText(font, fs, ImVec2(center.x - ts.x * 0.5f, p1.y - h * 0.05f - ts.y), c.text, label);
+    }
+}
+
+static void drawMdController(ImDrawList* dl, ImVec2 center, float w, int type)
+{
+    MaskColors c = maskColors(type);
+    float h = w * 0.62f;
+    ImVec2 p0(center.x - w * 0.5f, center.y - h * 0.5f);
+    ImVec2 p1(center.x + w * 0.5f, center.y + h * 0.5f);
+    float rounding = h * 0.24f;
+
+    dl->AddCircleFilled(center, w * 0.58f, c.glow, 48);
+    dl->AddRectFilled(p0, p1, c.body, rounding);
+
+    ImVec2 t0(p0.x + w * 0.06f, p0.y + h * 0.10f);
+    ImVec2 t1(p1.x - w * 0.06f, p0.y + h * 0.22f);
+    dl->AddRectFilled(t0, t1, c.top, rounding * 0.5f);
+
+    float dp = w * 0.24f;
+    ImVec2 dc(center.x - w * 0.24f, center.y + h * 0.06f);
+    dl->AddRectFilled(ImVec2(dc.x - dp * 0.5f, dc.y - dp * 0.17f),
+                      ImVec2(dc.x + dp * 0.5f, dc.y + dp * 0.17f), c.top, 2.0f);
+    dl->AddRectFilled(ImVec2(dc.x - dp * 0.17f, dc.y - dp * 0.5f),
+                      ImVec2(dc.x + dp * 0.17f, dc.y + dp * 0.5f), c.top, 2.0f);
+
+    float br = w * 0.065f;
+    ImVec2 bc(center.x + w * 0.20f, center.y + h * 0.04f);
+    dl->AddCircleFilled(ImVec2(bc.x - br * 1.5f, bc.y + br * 1.4f), br, c.accent, 16);
+    dl->AddCircleFilled(ImVec2(bc.x, bc.y), br, c.accent, 16);
+    dl->AddCircleFilled(ImVec2(bc.x + br * 1.5f, bc.y - br * 1.4f), br, c.accent, 16);
+
+    dl->AddCircleFilled(ImVec2(center.x, center.y - h * 0.30f), br * 0.7f, c.top, 12);
+
+    dl->AddBezierCubic(ImVec2(center.x - w * 0.10f, p0.y),
+                       ImVec2(center.x - w * 0.30f, p0.y - h * 0.55f),
+                       ImVec2(center.x - w * 0.05f, p0.y - h * 0.85f),
+                       ImVec2(center.x + w * 0.10f, p0.y - h * 1.10f),
+                       c.top, 2.0f);
+}
+
+static GLuint getMaskTexture()
+{
+    if (!g_maskTex)
+    {
+        std::string p = assetPath("mask_md.png");
+        int w = 0, h = 0, ch = 0;
+        unsigned char* data = stbi_load(p.c_str(), &w, &h, &ch, 4);
+        if (data)
+        {
+            glGenTextures(1, &g_maskTex);
+            glBindTexture(GL_TEXTURE_2D, g_maskTex);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
+            stbi_image_free(data);
+        }
+    }
+    return g_maskTex;
+}
+
+static void drawSideMask(const ImVec2& winPos, const ImVec2& winSize,
+                         const ImVec2& gamePos, const ImVec2& gameSize)
+{
+    float leftW = gamePos.x - winPos.x;
+    float rightW = (winPos.x + winSize.x) - (gamePos.x + gameSize.x);
+    if (leftW < 70.0f && rightW < 70.0f)
+        return;
+
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    if (!dl)
+        return;
+
+    // Ready-made black MD console overlay (RetroArch bezel): draw it as a
+    // full-window backdrop and let the game image sit inside its play area.
+    if (getMaskTexture())
+    {
+        ImU32 bg = (g_lastAppliedDark == 1) ? IM_COL32(6, 8, 10, 255) : IM_COL32(14, 14, 16, 255);
+        dl->AddRectFilled(winPos, ImVec2(winPos.x + winSize.x, winPos.y + winSize.y), bg, 0.0f);
+
+        dl->AddImage((ImTextureID)(intptr_t)g_maskTex, winPos,
+                     ImVec2(winPos.x + winSize.x, winPos.y + winSize.y),
+                     ImVec2(0, 0), ImVec2(1, 1), IM_COL32(255, 255, 255, 255));
+        return;
+    }
+
+    MaskColors c = maskColors(g_cfg.maskType);
+    float top = winPos.y;
+    float bottom = winPos.y + winSize.y;
+    float centerY = top + (bottom - top) * 0.5f;
+
+    if (leftW >= 70.0f)
+    {
+        ImVec2 b0(winPos.x + 6.0f, top + 6.0f);
+        ImVec2 b1(gamePos.x - 6.0f, bottom - 6.0f);
+        if (b1.x > b0.x && b1.y > b0.y)
+            dl->AddRectFilled(b0, b1, c.panel, 12.0f);
+        float cw = std::min(leftW * 0.78f, 300.0f);
+        drawMdConsole(dl, ImVec2(winPos.x + leftW * 0.5f, centerY), cw, g_cfg.maskType);
+    }
+
+    if (rightW >= 70.0f)
+    {
+        ImVec2 b0(gamePos.x + gameSize.x + 6.0f, top + 6.0f);
+        ImVec2 b1(winPos.x + winSize.x - 6.0f, bottom - 6.0f);
+        if (b1.x > b0.x && b1.y > b0.y)
+            dl->AddRectFilled(b0, b1, c.panel, 12.0f);
+        float cw = std::min(rightW * 0.70f, 220.0f);
+        drawMdController(dl, ImVec2(gamePos.x + gameSize.x + rightW * 0.5f, centerY), cw, g_cfg.maskType);
+    }
+}
 
 static void drawViewport()
 {
@@ -2477,6 +2767,8 @@ static void drawViewport()
     GLuint displayTex = g_tex;
     if (g_cfg.videoFilter >= 2)
         displayTex = videoFilterRender(g_tex, baseW, baseH, (int)destW, (int)destH, g_cfg.videoFilter);
+    if (g_cfg.maskEnabled)
+        drawSideMask(winPos, winSize, drawPos, imgSize);
     ImGui::SetCursorScreenPos(drawPos);
     ImGui::Image((ImTextureID)(intptr_t)displayTex, imgSize);
     (void)availStart;
@@ -2507,6 +2799,20 @@ static void handleEvent(const SDL_Event& e)
     {
         if (e.window.event == SDL_WINDOWEVENT_FOCUS_GAINED)
             SDL_StopTextInput();
+        else if (e.window.event == SDL_WINDOWEVENT_MAXIMIZED)
+            g_cfg.windowMaximized = true;
+        else if (e.window.event == SDL_WINDOWEVENT_RESTORED)
+            g_cfg.windowMaximized = false;
+        else if (e.window.event == SDL_WINDOWEVENT_MOVED && !isFullscreenActive() && !g_cfg.windowMaximized)
+        {
+            SDL_GetWindowPosition(g_window, &g_cfg.windowX, &g_cfg.windowY);
+            g_cfg.windowSaved = true;
+        }
+        else if (e.window.event == SDL_WINDOWEVENT_RESIZED && !isFullscreenActive() && !g_cfg.windowMaximized)
+        {
+            SDL_GetWindowSize(g_window, &g_cfg.windowW, &g_cfg.windowH);
+            g_cfg.windowSaved = true;
+        }
     }
     else if (e.type == SDL_CONTROLLERDEVICEADDED || e.type == SDL_JOYDEVICEADDED)
     {
@@ -2640,6 +2946,36 @@ static void handleEvent(const SDL_Event& e)
     }
 }
 
+static bool windowRectVisible(int x, int y, int w, int h)
+{
+    for (int i = 0; i < SDL_GetNumVideoDisplays(); ++i)
+    {
+        SDL_Rect bounds{};
+        if (SDL_GetDisplayUsableBounds(i, &bounds) != 0)
+            continue;
+        SDL_Rect window{x, y, w, h};
+        SDL_Rect overlap{};
+        if (SDL_IntersectRect(&window, &bounds, &overlap) && overlap.w >= 100 && overlap.h >= 100)
+            return true;
+    }
+    return false;
+}
+
+static void centerWindowOnPrimary(int w, int h, int& x, int& y)
+{
+    SDL_Rect bounds{};
+    if (SDL_GetDisplayUsableBounds(0, &bounds) == 0)
+    {
+        x = bounds.x + (bounds.w - w) / 2;
+        y = bounds.y + (bounds.h - h) / 2;
+    }
+    else
+    {
+        x = SDL_WINDOWPOS_CENTERED;
+        y = SDL_WINDOWPOS_CENTERED;
+    }
+}
+
 int main(int argc, char** argv)
 {
     (void)argc;
@@ -2647,9 +2983,19 @@ int main(int argc, char** argv)
 
     populateScancodeNames();
     loadConfig();
+    size_t recentCount = g_cfg.recentGames.size();
+    g_cfg.recentGames.erase(
+        std::remove_if(g_cfg.recentGames.begin(), g_cfg.recentGames.end(),
+                       [](const std::string& path) { return !fileExists(path); }),
+        g_cfg.recentGames.end());
+    if (g_cfg.recentGames.size() != recentCount)
+        saveConfig();
     // Always launch windowed; fullscreen is a runtime toggle only (F11).
     g_cfg.fullscreen = false;
     SetConsoleCtrlHandler(consoleCtrlHandler, TRUE);
+
+    SDL_SetHint(SDL_HINT_WINDOWS_DPI_AWARENESS, "permonitorv2");
+    SDL_SetHint(SDL_HINT_WINDOWS_DPI_SCALING, "1");
 
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER) != 0)
     {
@@ -2671,9 +3017,18 @@ int main(int argc, char** argv)
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
 
+    int winW = g_cfg.windowW > 0 ? g_cfg.windowW : 1024;
+    int winH = g_cfg.windowH > 0 ? g_cfg.windowH : 640;
+    if (winW < 640) winW = 640;
+    if (winH < 400) winH = 400;
+    int winX = g_cfg.windowX;
+    int winY = g_cfg.windowY;
+    if (!g_cfg.windowSaved || !windowRectVisible(winX, winY, winW, winH))
+        centerWindowOnPrimary(winW, winH, winX, winY);
+
     g_window = SDL_CreateWindow("MesenMD",
-                                SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-                                1024, 640,
+                                winX, winY,
+                                winW, winH,
                                 SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
     if (!g_window)
     {
@@ -2681,6 +3036,9 @@ int main(int argc, char** argv)
         SDL_Quit();
         return 1;
     }
+    SDL_SetWindowMinimumSize(g_window, 640, 400);
+    if (g_cfg.windowSaved && g_cfg.windowMaximized)
+        SDL_MaximizeWindow(g_window);
 
     g_glContext = SDL_GL_CreateContext(g_window);
     if (!g_glContext)
@@ -2833,9 +3191,10 @@ int main(int argc, char** argv)
         }
 
         ImGui::Render();
-        int dw, dh;
-        SDL_GetWindowSize(g_window, &dw, &dh);
-        glViewport(0, 0, dw, dh);
+        int dw = 0, dh = 0;
+        SDL_GL_GetDrawableSize(g_window, &dw, &dh);
+        if (dw > 0 && dh > 0)
+            glViewport(0, 0, dw, dh);
         glClearColor(g_clearColor.x, g_clearColor.y, g_clearColor.z, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
@@ -2864,6 +3223,8 @@ int main(int argc, char** argv)
 
     if (g_tex)
         glDeleteTextures(1, &g_tex);
+    if (g_maskTex)
+        glDeleteTextures(1, &g_maskTex);
 
     videoFiltersShutdown();
     ImGui_ImplOpenGL3_Shutdown();
@@ -2873,6 +3234,17 @@ int main(int argc, char** argv)
     stopAudio();
     g_emu.unloadGame();
     g_emu.unloadCore();
+
+    if (!isFullscreenActive())
+    {
+        if (!(SDL_GetWindowFlags(g_window) & SDL_WINDOW_MAXIMIZED))
+        {
+            SDL_GetWindowPosition(g_window, &g_cfg.windowX, &g_cfg.windowY);
+            SDL_GetWindowSize(g_window, &g_cfg.windowW, &g_cfg.windowH);
+        }
+        g_cfg.windowSaved = true;
+    }
+    g_cfg.windowMaximized = (SDL_GetWindowFlags(g_window) & SDL_WINDOW_MAXIMIZED) != 0;
 
     SDL_GL_DeleteContext(g_glContext);
     SDL_DestroyWindow(g_window);
